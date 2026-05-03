@@ -1,8 +1,13 @@
 /**
  * Centro Agent — LangGraph.js StateGraph
- * Day 2 实现：6 个 Node 编排完整推荐流程
+ * Day 4+ 实现：LLM 意图识别 + 条件边 + 多轮追问 + 约束迭代
  *
- * 流程：parseInput → geocode → computeCenter → searchPoi → planRoutes → rankResults
+ * 流程：
+ *   START → parseInput → [条件边]
+ *     ├─ missingInfo → END（追问）
+ *     ├─ iterate（换关键词）→ searchPoi（跳过 geocode/computeCenter）
+ *     ├─ clarify（补充信息）→ 合并后走正常流程
+ *     └─ new（全新请求）→ geocode → computeCenter → searchPoi → planRoutes → rankResults → END
  */
 
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
@@ -23,7 +28,7 @@ import {
 import { chatJSON } from "@/lib/llm";
 
 // ============================================================
-// 1. State 定义（LangGraph Annotation）
+// 1. State 定义
 // ============================================================
 
 const GatherAnnotation = Annotation.Root({
@@ -72,18 +77,107 @@ const GatherAnnotation = Annotation.Root({
 });
 
 // ============================================================
-// 2. Node 实现
+// 2. 类型定义
 // ============================================================
+
+type UserIntent = "new" | "iterate" | "clarify";
 
 interface ParsedInput {
   participants?: Array<{ name?: string; address?: string }>;
   keywords?: string;
   city?: string;
+  intent: UserIntent;
+  newKeywords?: string;
   missingInfo?: string;
 }
 
+// ============================================================
+// 3. Node 实现
+// ============================================================
+
 /**
- * Node 1: parseInput — 用 LLM 解析用户输入
+ * 生成意图识别的系统 Prompt
+ */
+function buildIntentPrompt(hasPrevState: boolean, prevInfo: string): string {
+  const base = `你是一个智能聚会选址助手。请分析用户输入，判断用户意图并提取信息。
+
+意图类型说明：
+- "new"：全新的聚会请求，包含地址和聚会类型。完整解析所有字段。
+- "iterate"：在已有推荐基础上换关键词/换类型。如"换成KTV"、"吃日料吧"、"我想换一家"。只填写 newKeywords 字段。
+- "clarify"：补充之前缺失的信息。如"在苏州"、"我是小明，住观前街"。只返回新补充或修改的信息，已有信息不填。
+
+规则：
+1. 如果用户说"换成XX"、"改一下"、"换一家"，intent 必须是 "iterate"
+2. 如果用户只输入一个关键词（如"KTV"、"日料"），且有对话历史，intent 是 "iterate"
+3. 如果用户补充地址/城市/人名，intent 是 "clarify"
+4. 如果是全新请求，intent 是 "new"
+5. 如果信息缺失且无法推断，返回 missingInfo`;
+
+  if (hasPrevState) {
+    return `${base}\n\n【当前已保存的信息】${prevInfo}\n请基于上下文判断用户意图。`;
+  }
+  return `${base}\n\n【当前没有已保存的信息】这是一个全新请求。`;
+}
+
+/**
+ * 合并 clarify 结果和 prevState
+ */
+function mergeClarify(
+  prev: typeof GatherAnnotation.State,
+  parsed: ParsedInput
+): Partial<typeof GatherAnnotation.Update> {
+  const mergedParticipants =
+    parsed.participants && parsed.participants.length > 0
+      ? [...prev.participants]
+      : prev.participants;
+
+  // 如果 clarify 补充了新的参与者，合并进去
+  if (parsed.participants) {
+    for (const p of parsed.participants) {
+      if (!p.name || !p.address) continue;
+      const existing = mergedParticipants.find((ep) => ep.name === p.name);
+      if (existing) {
+        existing.address = p.address;
+        existing.location = undefined; // 地址变了，清空旧坐标
+      } else {
+        mergedParticipants.push({ name: p.name, address: p.address });
+      }
+    }
+  }
+
+  const mergedCity = parsed.city || prev.city;
+  const mergedKeywords = parsed.keywords || prev.keywords;
+
+  // 检查是否还有缺失
+  let missingInfo: string | undefined;
+  if (mergedParticipants.length === 0) missingInfo = "请提供参与者地址";
+  else if (!mergedCity) missingInfo = "请提供城市名";
+  else if (!mergedKeywords) missingInfo = "请提供聚会类型";
+
+  if (missingInfo) {
+    return {
+      participants: mergedParticipants,
+      city: mergedCity,
+      keywords: mergedKeywords,
+      missingInfo,
+      status: "collecting",
+      conversationHistory: [
+        { role: "assistant", content: `我需要更多信息：${missingInfo}` },
+      ],
+    };
+  }
+
+  return {
+    participants: mergedParticipants,
+    city: mergedCity,
+    keywords: mergedKeywords,
+    status: "geocoding",
+    missingInfo: undefined,
+  };
+}
+
+/**
+ * Node 1: parseInput — LLM 意图识别 + 信息提取
  */
 async function parseInputNode(
   state: typeof GatherAnnotation.State
@@ -95,9 +189,34 @@ async function parseInputNode(
     return { missingInfo: "未收到用户输入", status: "collecting" };
   }
 
-  // MOCK 模式：当没有可用 LLM 时直接返回硬编码解析结果
+  const hasPrevState =
+    state.participants.length > 0 && !!state.centerPoint;
+
+  // ===== MOCK 模式 =====
   if (process.env.MOCK_LLM === "true") {
     const content = lastUserMsg.content;
+
+    // 迭代检测
+    if (hasPrevState) {
+      const isIterate =
+        content.length < 10 ||
+        ["换", "改", "不要"].some((k) => content.includes(k));
+      if (isIterate) {
+        const newKeyword = content.replace(/换|改|成|换成|改为|不要|换一个|改一下/g, "").trim() || "餐厅";
+        return {
+          keywords: newKeyword,
+          status: "searching",
+          candidates: [],
+          routes: [],
+          recommendations: [],
+          missingInfo: undefined,
+          conversationHistory: [
+            { role: "assistant", content: `好的，为您重新搜索"${newKeyword}"...` },
+          ],
+        };
+      }
+    }
+
     const mockParticipants: Participant[] = [];
     let keywords = "餐厅";
     let city: string | undefined = undefined;
@@ -110,9 +229,30 @@ async function parseInputNode(
       mockParticipants.push({ name: "小明", address: "阳澄湖" });
       city = "苏州";
     }
+    if (content.includes("上饶")) city = "上饶";
+    if (content.includes("广信区")) {
+      mockParticipants.push({ name: "我", address: "上饶广信区" });
+    }
+    if (content.includes("鄱阳湖")) {
+      mockParticipants.push({ name: "他", address: "上饶鄱阳湖" });
+    }
     if (content.includes("火锅")) keywords = "火锅";
     if (content.includes("KTV")) keywords = "KTV";
     if (content.includes("咖啡")) keywords = "咖啡厅";
+    if (content.includes("炒粉")) keywords = "炒粉";
+
+    if (mockParticipants.length < 1) {
+      return {
+        missingInfo: "请提供具体地址信息",
+        status: "collecting",
+        conversationHistory: [
+          {
+            role: "assistant",
+            content: "请告诉我聚会成员的地址，比如'我住在观前街，小明住在阳澄湖'",
+          },
+        ],
+      };
+    }
 
     return {
       participants: mockParticipants,
@@ -123,55 +263,124 @@ async function parseInputNode(
     };
   }
 
+  // ===== LLM 意图识别 =====
+  const prevInfo = hasPrevState
+    ? `参与者：${state.participants.map((p) => `${p.name}(${p.address})`).join("、")}，城市：${state.city || "未知"}，关键词：${state.keywords || "未知"}`
+    : "";
+
+  const systemPrompt = buildIntentPrompt(hasPrevState, prevInfo);
+
   const schemaDesc = JSON.stringify({
+    intent: "new | iterate | clarify",
     participants: [
-      { name: "用户提到的称呼或名字", address: "具体地址或地名" },
+      { name: "称呼", address: "地址" },
     ],
-    keywords: "聚会类型关键词，如火锅、KTV、咖啡厅、餐厅等",
-    city: "城市名，如苏州、上海",
-    missingInfo: "如果地址、城市、聚会类型任一缺失，描述缺少什么；否则为 null",
+    keywords: "聚会类型，如火锅、KTV、咖啡厅",
+    city: "城市名",
+    newKeywords: "当 intent='iterate' 时，用户想要的新关键词",
+    missingInfo: "信息缺失描述，或 null",
   });
 
   const parsed = await chatJSON<ParsedInput>(
     [
-      {
-        role: "user",
-        content: lastUserMsg.content,
-      },
+      { role: "system", content: systemPrompt },
+      { role: "user", content: lastUserMsg.content },
     ],
     schemaDesc
   );
 
-  // 如果缺少关键信息
+  // ===== 按意图处理 =====
+
+  // 1. 迭代请求
+  if (parsed.intent === "iterate") {
+    const newKeyword = parsed.newKeywords || parsed.keywords || "餐厅";
+    return {
+      keywords: newKeyword,
+      status: "searching",
+      candidates: [],
+      routes: [],
+      recommendations: [],
+      missingInfo: undefined,
+      conversationHistory: [
+        { role: "assistant", content: `好的，为您重新搜索"${newKeyword}"...` },
+      ],
+    };
+  }
+
+  // 2. 补充信息
+  if (parsed.intent === "clarify" && hasPrevState) {
+    return mergeClarify(state, parsed);
+  }
+
+  // 3. 全新请求
+  // 合并 prevState 中的城市信息
+  if (!parsed.city && state.city) {
+    parsed.city = state.city;
+  }
+
+  // 城市推断兜底
+  if (!parsed.city && parsed.participants?.length) {
+    const knownCities: Record<string, string> = {
+      观前街: "苏州", 阳澄湖: "苏州", 独墅湖: "苏州", 苏州中心: "苏州",
+      广信区: "上饶", 鄱阳湖: "上饶",
+    };
+    for (const p of parsed.participants) {
+      for (const [key, city] of Object.entries(knownCities)) {
+        if (p.address?.includes(key)) {
+          parsed.city = city;
+          break;
+        }
+      }
+      if (parsed.city) break;
+    }
+  }
+
+  // 如果 missingInfo 包含城市且没推断出来，用 LLM 专门推断一次
+  if (parsed.missingInfo?.includes("城市") && !parsed.city && parsed.participants?.length) {
+    const addresses = parsed.participants.map((p) => p.address).join("、");
+    const cityInference = await chatJSON<{ city: string | null; ambiguous: boolean }>(
+      [
+        {
+          role: "system",
+          content: "你是一个中国地理助手。根据给出的地址，判断这些地址属于哪个城市。如果能唯一确定返回 city，有歧义返回 ambiguous: true",
+        },
+        { role: "user", content: `这些地址属于哪个城市：${addresses}` },
+      ],
+      JSON.stringify({
+        city: "城市名或 null",
+        ambiguous: "boolean",
+      })
+    );
+    if (!cityInference.ambiguous && cityInference.city) {
+      parsed.city = cityInference.city;
+    }
+  }
+
+  // 补上城市后清除 missingInfo
+  if (parsed.missingInfo?.includes("城市") && parsed.city) {
+    parsed.missingInfo = undefined;
+  }
+
   if (parsed.missingInfo) {
     return {
       missingInfo: parsed.missingInfo,
       status: "collecting",
       conversationHistory: [
-        {
-          role: "assistant",
-          content: `我需要更多信息：${parsed.missingInfo}`,
-        },
+        { role: "assistant", content: `我需要更多信息：${parsed.missingInfo}` },
       ],
     };
   }
 
   const participants: Participant[] = (parsed.participants || [])
     .filter((p) => p?.name && p?.address)
-    .map((p) => ({
-      name: p.name!,
-      address: p.address!,
-    }));
+    .map((p) => ({ name: p.name!, address: p.address! }));
 
   if (participants.length < 1) {
     return {
       missingInfo: "请至少提供一个人的地址",
       status: "collecting",
       conversationHistory: [
-        {
-          role: "assistant",
-          content: "请至少提供一个人的地址，比如'我住在观前街'",
-        },
+        { role: "assistant", content: "请至少提供一个人的地址，比如'我住在观前街'" },
       ],
     };
   }
@@ -186,7 +395,7 @@ async function parseInputNode(
 }
 
 /**
- * Node 2: geocode — 对所有参与者地址进行地理编码
+ * Node 2: geocode
  */
 async function geocodeNode(
   state: typeof GatherAnnotation.State
@@ -200,7 +409,6 @@ async function geocodeNode(
       const result = await geocode(p.address, city);
       if ("error" in result) {
         console.error(`地理编码失败 [${p.name}]:`, result.error);
-        // 失败时不中断，继续处理其他人
       } else {
         participants[i] = { ...p, location: result.location };
       }
@@ -221,14 +429,11 @@ async function geocodeNode(
     };
   }
 
-  return {
-    participants,
-    status: "geocoding",
-  };
+  return { participants, status: "geocoding" };
 }
 
 /**
- * Node 3: computeCenter — 计算地理中心点
+ * Node 3: computeCenter
  */
 async function computeCenterNode(
   state: typeof GatherAnnotation.State
@@ -238,35 +443,23 @@ async function computeCenterNode(
     .filter((loc): loc is string => !!loc);
 
   if (locations.length === 0) {
-    return {
-      missingInfo: "没有可用的位置信息",
-      status: "collecting",
-    };
+    return { missingInfo: "没有可用的位置信息", status: "collecting" };
   }
 
   const centerPoint = computeCentroid(locations);
-
-  return {
-    centerPoint,
-    status: "searching",
-  };
+  return { centerPoint, status: "searching" };
 }
 
 /**
- * Node 4: searchPoi — 在中心点附近搜索聚会场所
- * Fallback 策略：10km 关键词 → 10km 餐厅 → 20km 餐厅
+ * Node 4: searchPoi — 支持 Fallback 策略
  */
 async function searchPoiNode(
   state: typeof GatherAnnotation.State
 ): Promise<Partial<typeof GatherAnnotation.Update>> {
   if (!state.centerPoint) {
-    return {
-      missingInfo: "无法计算中心点",
-      status: "collecting",
-    };
+    return { missingInfo: "无法计算中心点", status: "collecting" };
   }
 
-  // 尝试策略列表
   const strategies: Array<{ keywords: string; radius: number; label: string }> = [
     { keywords: state.keywords, radius: 10000, label: state.keywords },
     { keywords: "餐厅", radius: 10000, label: "餐厅" },
@@ -312,12 +505,11 @@ async function searchPoiNode(
 }
 
 /**
- * Node 5: planRoutes — 为每个人规划到每个候选地点的路线
+ * Node 5: planRoutes — 公交失败 fallback 驾车
  */
 async function planRoutesNode(
   state: typeof GatherAnnotation.State
 ): Promise<Partial<typeof GatherAnnotation.Update>> {
-  // 如果前面步骤已经失败，不再浪费 API 调用
   if (state.missingInfo || state.candidates.length === 0) {
     return { routes: [], status: "ranking" };
   }
@@ -325,19 +517,15 @@ async function planRoutesNode(
   const participants = state.participants.filter((p) => p.location);
   const candidates = state.candidates;
   const city = state.city || "苏州";
-
   const routes: RouteResult[] = [];
 
   for (const poi of candidates) {
     for (const p of participants) {
-      // 先尝试公交
       const route = await routePlan(p.location!, poi.location, "transit", city);
       if (!("error" in route)) {
         routes.push(route);
         continue;
       }
-
-      // 公交失败 → fallback 驾车
       const drivingRoute = await routePlan(
         p.location!,
         poi.location,
@@ -350,14 +538,11 @@ async function planRoutesNode(
     }
   }
 
-  return {
-    routes,
-    status: "ranking",
-  };
+  return { routes, status: "ranking" };
 }
 
 /**
- * Node 6: rankResults — 计算推荐排序
+ * Node 6: rankResults
  */
 async function rankResultsNode(
   state: typeof GatherAnnotation.State
@@ -366,43 +551,37 @@ async function rankResultsNode(
   const candidates = state.candidates;
   const allRoutes = state.routes;
 
-  // 如果前面步骤已经失败，返回有意义的错误消息
   if (candidates.length === 0) {
     const errorMsg =
       state.missingInfo || "未找到合适的聚会场所，请换个关键词或地址试试";
     return {
       recommendations: [],
       status: "done",
-      conversationHistory: [
-        {
-          role: "assistant",
-          content: errorMsg,
-        },
-      ],
+      conversationHistory: [{ role: "assistant", content: errorMsg }],
     };
   }
 
-  const recommendations: Recommendation[] = candidates.map((poi) => {
-    const poiRoutes = allRoutes.filter((r) => r.destination === poi.location);
+  // 近似坐标匹配（高德 API 返回精度可能不同）
+  function isSameLocation(a?: string, b?: string): boolean {
+    if (!a || !b) return false;
+    const [aLng, aLat] = a.split(",").map(Number);
+    const [bLng, bLat] = b.split(",").map(Number);
+    return Math.abs(aLng - bLng) < 0.001 && Math.abs(aLat - bLat) < 0.001;
+  }
 
+  const recommendations: Recommendation[] = candidates.map((poi) => {
+    const poiRoutes = allRoutes.filter((r) => isSameLocation(r.destination, poi.location));
     const routesForParticipants = participants.map((p) => {
-      const route = poiRoutes.find((r) => r.origin === p.location);
+      const route = poiRoutes.find((r) => isSameLocation(r.origin, p.location));
       const distance_km = route?.distance_km ?? 999;
       const duration_min = route?.duration_min ?? 999;
 
-      // Agent 智能判断出行方式
       let transportMode = "公交";
-      if (distance_km >= 999) {
-        transportMode = "未知";
-      } else if (distance_km < 3) {
-        transportMode = "步行/骑行";
-      } else if (distance_km < 15) {
-        transportMode = "公交/地铁";
-      } else if (distance_km < 50) {
-        transportMode = "驾车";
-      } else {
-        transportMode = "高铁+当地交通";
-      }
+      if (distance_km >= 999) transportMode = "未知";
+      else if (distance_km < 3) transportMode = "步行/骑行";
+      else if (distance_km < 15) transportMode = "公交/地铁";
+      else if (distance_km < 50) transportMode = "驾车";
+      else transportMode = "高铁+当地交通";
 
       return {
         participantName: p.name,
@@ -420,49 +599,38 @@ async function rankResultsNode(
       ...routesForParticipants.map((r) => r.duration_min)
     );
 
-    return {
-      poi,
-      routes: routesForParticipants,
-      totalDuration,
-      maxDuration,
-    };
+    return { poi, routes: routesForParticipants, totalDuration, maxDuration };
   });
 
-  // 按最久通勤时间排序（所有人同时出发，最慢的人决定等待时间）
   recommendations.sort((a, b) => a.maxDuration - b.maxDuration);
 
   return {
     recommendations,
     status: "done",
     conversationHistory: [
-      {
-        role: "assistant",
-        content: formatRecommendations(recommendations),
-      },
+      { role: "assistant", content: formatRecommendations(recommendations) },
     ],
   };
 }
 
 /**
- * 格式化推荐结果为简短聊天文本（详情见右侧卡片）
+ * 格式化聊天回复
  */
 function formatRecommendations(recs: Recommendation[]): string {
   if (recs.length === 0) return "抱歉，没有生成推荐结果。";
 
   const best = recs[0];
-
-  // 综合判断最优推荐的主推出行方式
   const allModes = best.routes.map((r) => r.transportMode);
-  const needsLongDistance = allModes.some((m) => m === "高铁+当地交通" || m === "驾车");
-  const transportHint = needsLongDistance
-    ? "（部分成员建议驾车/高铁出行）"
-    : "";
+  const needsLongDistance = allModes.some(
+    (m) => m === "高铁+当地交通" || m === "驾车"
+  );
+  const transportHint = needsLongDistance ? "（部分成员建议驾车/高铁出行）" : "";
 
   return `🎯 为您推荐 ${recs.length} 个聚会地点，详情见右侧卡片。\n\n最优推荐：${best.poi.name} ⭐${best.poi.rating || "暂无"}${transportHint}\n等待时间 ${best.maxDuration} 分钟（最慢的人到达时间）。`;
 }
 
 // ============================================================
-// 3. 构建 StateGraph
+// 4. 构建 StateGraph + 条件边
 // ============================================================
 
 const graphBuilder = new StateGraph(GatherAnnotation)
@@ -473,7 +641,18 @@ const graphBuilder = new StateGraph(GatherAnnotation)
   .addNode("planRoutes", planRoutesNode)
   .addNode("rankResults", rankResultsNode)
   .addEdge(START, "parseInput")
-  .addEdge("parseInput", "geocode")
+  .addConditionalEdges("parseInput", (state) => {
+    // 1. 缺失信息 → 结束，等待用户补充
+    if (state.missingInfo) return END;
+
+    // 2. 约束迭代：已有 participants 和 centerPoint → 跳过 geocode
+    if (state.participants.length > 0 && state.centerPoint) {
+      return "searchPoi";
+    }
+
+    // 3. 正常流程
+    return "geocode";
+  })
   .addEdge("geocode", "computeCenter")
   .addEdge("computeCenter", "searchPoi")
   .addEdge("searchPoi", "planRoutes")

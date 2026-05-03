@@ -2,8 +2,7 @@
  * Next.js API Route — Agent 入口
  * POST /api/agent
  *
- * Day 2 实现：接收用户消息 → 调用 LangGraph Agent → 返回结果
- * Day 3 升级：SSE 流式响应
+ * Day 4 升级：支持 prevState 传递，实现多轮对话和约束迭代
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -13,7 +12,7 @@ import { GatherState } from "@/types";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message, history = [] } = body;
+    const { message, history = [], prevState = {} } = body;
 
     if (!message || typeof message !== "string") {
       return NextResponse.json(
@@ -27,7 +26,9 @@ export async function POST(request: NextRequest) {
       { role: "user" as const, content: message },
     ];
 
+    // 合并 prevState（约束迭代时保留 participants、centerPoint 等）
     const initialState: Partial<GatherState> = {
+      ...prevState,
       conversationHistory,
     };
 
@@ -47,6 +48,13 @@ export async function POST(request: NextRequest) {
       candidates: result.candidates,
       recommendations: result.recommendations,
       missingInfo: result.missingInfo,
+      // 返回完整 state，前端可用于下一轮迭代
+      state: {
+        participants: result.participants,
+        centerPoint: result.centerPoint,
+        keywords: result.keywords,
+        city: result.city,
+      },
     });
   } catch (error) {
     console.error("Agent API Error:", error);

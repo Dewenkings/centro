@@ -27,6 +27,8 @@ export default function Home() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [centerPoint, setCenterPoint] = useState<string>();
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  // 保存 Agent 返回的 state，用于约束迭代
+  const [agentState, setAgentState] = useState<Record<string, unknown>>({});
 
   // 可拖拽分栏
   const [chatWidth, setChatWidth] = useState(400);
@@ -59,6 +61,7 @@ export default function Home() {
         body: JSON.stringify({
           message: text,
           history: messages,
+          prevState: agentState,
         }),
       });
 
@@ -73,6 +76,10 @@ export default function Home() {
         setParticipants(data.participants || []);
         setCenterPoint(data.centerPoint);
         setRecommendations(data.recommendations || []);
+        // 保存 state 用于下一轮迭代
+        if (data.state) {
+          setAgentState(data.state);
+        }
       } else {
         setMessages((prev) => [
           ...prev,
