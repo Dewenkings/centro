@@ -30,6 +30,7 @@ export interface RouteForParticipant {
   participantName: string;
   duration_min: number;
   distance_km: number;
+  transportMode?: string; // 推荐出行方式：步行、公交、驾车、高铁
 }
 
 export interface Recommendation {

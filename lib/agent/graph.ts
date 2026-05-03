@@ -254,6 +254,7 @@ async function computeCenterNode(
 
 /**
  * Node 4: searchPoi — 在中心点附近搜索聚会场所
+ * Fallback 策略：10km 关键词 → 10km 餐厅 → 20km 餐厅
  */
 async function searchPoiNode(
   state: typeof GatherAnnotation.State
@@ -265,29 +266,48 @@ async function searchPoiNode(
     };
   }
 
-  const result = await searchNearbyPois(
-    state.centerPoint,
-    state.keywords,
-    5000, // 半径 5km
-    10 // 最多 10 个候选
-  );
+  // 尝试策略列表
+  const strategies: Array<{ keywords: string; radius: number; label: string }> = [
+    { keywords: state.keywords, radius: 10000, label: state.keywords },
+    { keywords: "餐厅", radius: 10000, label: "餐厅" },
+    { keywords: "餐厅", radius: 20000, label: "餐厅" },
+  ];
 
-  if ("error" in result || !result.pois.length) {
-    return {
-      missingInfo: `附近没有找到"${state.keywords}"，请换个关键词试试`,
-      status: "collecting",
-      conversationHistory: [
-        {
-          role: "assistant",
-          content: `附近没有找到"${state.keywords}"的相关场所，您可以换个关键词再试试。`,
-        },
-      ],
-    };
+  for (const strategy of strategies) {
+    const result = await searchNearbyPois(
+      state.centerPoint,
+      strategy.keywords,
+      strategy.radius,
+      10
+    );
+
+    if (!("error" in result) && result.pois.length > 0) {
+      const fallbackMsg =
+        strategy.label !== state.keywords
+          ? `附近没有找到"${state.keywords}"，为您推荐附近的${strategy.label}：`
+          : undefined;
+
+      return {
+        candidates: result.pois,
+        keywords: strategy.keywords,
+        status: "planning",
+        missingInfo: undefined,
+        conversationHistory: fallbackMsg
+          ? [{ role: "assistant", content: fallbackMsg }]
+          : undefined,
+      };
+    }
   }
 
   return {
-    candidates: result.pois,
-    status: "planning",
+    missingInfo: `中心点附近 20km 内没有找到任何餐厅，请更换地址或城市试试`,
+    status: "collecting",
+    conversationHistory: [
+      {
+        role: "assistant",
+        content: "附近没有找到合适的聚会场所，您可以换更靠近市中心的地址再试试。",
+      },
+    ],
   };
 }
 
@@ -297,6 +317,11 @@ async function searchPoiNode(
 async function planRoutesNode(
   state: typeof GatherAnnotation.State
 ): Promise<Partial<typeof GatherAnnotation.Update>> {
+  // 如果前面步骤已经失败，不再浪费 API 调用
+  if (state.missingInfo || state.candidates.length === 0) {
+    return { routes: [], status: "ranking" };
+  }
+
   const participants = state.participants.filter((p) => p.location);
   const candidates = state.candidates;
   const city = state.city || "苏州";
@@ -305,9 +330,22 @@ async function planRoutesNode(
 
   for (const poi of candidates) {
     for (const p of participants) {
+      // 先尝试公交
       const route = await routePlan(p.location!, poi.location, "transit", city);
       if (!("error" in route)) {
         routes.push(route);
+        continue;
+      }
+
+      // 公交失败 → fallback 驾车
+      const drivingRoute = await routePlan(
+        p.location!,
+        poi.location,
+        "driving",
+        city
+      );
+      if (!("error" in drivingRoute)) {
+        routes.push(drivingRoute);
       }
     }
   }
@@ -328,15 +366,49 @@ async function rankResultsNode(
   const candidates = state.candidates;
   const allRoutes = state.routes;
 
+  // 如果前面步骤已经失败，返回有意义的错误消息
+  if (candidates.length === 0) {
+    const errorMsg =
+      state.missingInfo || "未找到合适的聚会场所，请换个关键词或地址试试";
+    return {
+      recommendations: [],
+      status: "done",
+      conversationHistory: [
+        {
+          role: "assistant",
+          content: errorMsg,
+        },
+      ],
+    };
+  }
+
   const recommendations: Recommendation[] = candidates.map((poi) => {
     const poiRoutes = allRoutes.filter((r) => r.destination === poi.location);
 
     const routesForParticipants = participants.map((p) => {
       const route = poiRoutes.find((r) => r.origin === p.location);
+      const distance_km = route?.distance_km ?? 999;
+      const duration_min = route?.duration_min ?? 999;
+
+      // Agent 智能判断出行方式
+      let transportMode = "公交";
+      if (distance_km >= 999) {
+        transportMode = "未知";
+      } else if (distance_km < 3) {
+        transportMode = "步行/骑行";
+      } else if (distance_km < 15) {
+        transportMode = "公交/地铁";
+      } else if (distance_km < 50) {
+        transportMode = "驾车";
+      } else {
+        transportMode = "高铁+当地交通";
+      }
+
       return {
         participantName: p.name,
-        duration_min: route?.duration_min ?? 999,
-        distance_km: route?.distance_km ?? 999,
+        duration_min,
+        distance_km,
+        transportMode,
       };
     });
 
@@ -356,8 +428,8 @@ async function rankResultsNode(
     };
   });
 
-  // 按总时长升序排序（总通勤成本最低优先）
-  recommendations.sort((a, b) => a.totalDuration - b.totalDuration);
+  // 按最久通勤时间排序（所有人同时出发，最慢的人决定等待时间）
+  recommendations.sort((a, b) => a.maxDuration - b.maxDuration);
 
   return {
     recommendations,
@@ -372,29 +444,21 @@ async function rankResultsNode(
 }
 
 /**
- * 格式化推荐结果为可读文本
+ * 格式化推荐结果为简短聊天文本（详情见右侧卡片）
  */
 function formatRecommendations(recs: Recommendation[]): string {
   if (recs.length === 0) return "抱歉，没有生成推荐结果。";
 
-  const lines: string[] = ["🎯 为您推荐以下聚会地点：\n"];
+  const best = recs[0];
 
-  recs.slice(0, 5).forEach((rec, i) => {
-    const poi = rec.poi;
-    lines.push(
-      `${i + 1}. ${poi.name}（${poi.type}）⭐${poi.rating || "暂无评分"}`
-    );
-    lines.push(`   📍 ${poi.address}`);
-    lines.push(`   📞 ${poi.tel || "暂无电话"}`);
-    lines.push(`   🚇 各成员通勤时间：`);
-    rec.routes.forEach((r) => {
-      lines.push(`      - ${r.participantName}: ${r.duration_min}分钟 (${r.distance_km}km)`);
-    });
-    lines.push(`   ⏱️ 总通勤时间: ${rec.totalDuration}分钟 | 最久: ${rec.maxDuration}分钟`);
-    lines.push("");
-  });
+  // 综合判断最优推荐的主推出行方式
+  const allModes = best.routes.map((r) => r.transportMode);
+  const needsLongDistance = allModes.some((m) => m === "高铁+当地交通" || m === "驾车");
+  const transportHint = needsLongDistance
+    ? "（部分成员建议驾车/高铁出行）"
+    : "";
 
-  return lines.join("\n");
+  return `🎯 为您推荐 ${recs.length} 个聚会地点，详情见右侧卡片。\n\n最优推荐：${best.poi.name} ⭐${best.poi.rating || "暂无"}${transportHint}\n等待时间 ${best.maxDuration} 分钟（最慢的人到达时间）。`;
 }
 
 // ============================================================

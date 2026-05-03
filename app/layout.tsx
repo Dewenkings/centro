@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "leaflet/dist/leaflet.css";
 
 export const metadata: Metadata = {
   title: "Centro - 多人聚会地点推荐",
@@ -13,7 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body className="h-screen w-screen overflow-hidden bg-gray-50">
+        {children}
+      </body>
     </html>
   );
 }
