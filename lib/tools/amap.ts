@@ -5,12 +5,13 @@
 
 const AMAP_BASE_URL_V3 = "https://restapi.amap.com/v3";
 const AMAP_BASE_URL_V5 = "https://restapi.amap.com/v5";
-const AMAP_KEY = process.env.AMAP_API_KEY || "";
 
-function ensureKey() {
-  if (!AMAP_KEY) {
+function getAmapKey(): string {
+  const key = process.env.AMAP_API_KEY || "";
+  if (!key) {
     throw new Error("AMAP_API_KEY is not set. Please check your .env.local");
   }
+  return key;
 }
 
 // ============================================================
@@ -28,9 +29,9 @@ export async function geocode(
   address: string,
   city?: string
 ): Promise<GeocodeResult | { error: string }> {
-  ensureKey();
+  const key = getAmapKey();
   const params = new URLSearchParams({
-    key: AMAP_KEY,
+    key: key,
     address,
     output: "JSON",
   });
@@ -78,8 +79,9 @@ export async function searchNearbyPois(
   radius: number = 3000,
   pageSize: number = 10
 ): Promise<SearchNearbyResult | { error: string }> {
+  const key = getAmapKey();
   const params = new URLSearchParams({
-    key: AMAP_KEY,
+    key: key,
     location,
     keywords,
     radius: String(radius),
@@ -134,8 +136,9 @@ export async function routePlan(
     transit: `${AMAP_BASE_URL_V3}/direction/transit/integrated`,
   };
 
+  const key = getAmapKey();
   const params = new URLSearchParams({
-    key: AMAP_KEY,
+    key: key,
     origin,
     destination,
     output: "JSON",

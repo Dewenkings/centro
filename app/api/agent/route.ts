@@ -7,19 +7,46 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { graph } from "@/lib/agent/graph";
+import { GatherState } from "@/types";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { message, history = [] } = body;
 
-    // TODO: Day 2 接入 LangGraph Agent
-    // const result = await graph.invoke({ ... });
+    if (!message || typeof message !== "string") {
+      return NextResponse.json(
+        { success: false, error: "message is required" },
+        { status: 400 }
+      );
+    }
+
+    const conversationHistory = [
+      ...history,
+      { role: "user" as const, content: message },
+    ];
+
+    const initialState: Partial<GatherState> = {
+      conversationHistory,
+    };
+
+    const result = await graph.invoke(initialState);
+
+    const lastAssistantMsg = [...result.conversationHistory]
+      .reverse()
+      .find((m) => m.role === "assistant");
 
     return NextResponse.json({
       success: true,
-      message: "Agent 尚未实现，这是占位响应",
-      received: message,
+      status: result.status,
+      reply: lastAssistantMsg?.content || "处理完成",
+      participants: result.participants,
+      centerPoint: result.centerPoint,
+      keywords: result.keywords,
+      candidates: result.candidates,
+      recommendations: result.recommendations,
+      missingInfo: result.missingInfo,
     });
   } catch (error) {
     console.error("Agent API Error:", error);

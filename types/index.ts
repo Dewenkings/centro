@@ -51,6 +51,7 @@ export interface GatherState {
   participants: Participant[];
   centerPoint?: string;
   keywords: string;
+  city?: string;
   candidates: POI[];
   routes: RouteResult[];
   recommendations: Recommendation[];
