@@ -626,7 +626,7 @@ function formatRecommendations(recs: Recommendation[]): string {
   );
   const transportHint = needsLongDistance ? "（部分成员建议驾车/高铁出行）" : "";
 
-  return `🎯 为您推荐 ${recs.length} 个聚会地点，详情见右侧卡片。\n\n最优推荐：${best.poi.name} ⭐${best.poi.rating || "暂无"}${transportHint}\n等待时间 ${best.maxDuration} 分钟（最慢的人到达时间）。`;
+  return `🎯 为您推荐 ${recs.length} 个聚会地点，详情见左侧卡片。\n\n最优推荐：${best.poi.name} ⭐${best.poi.rating || "暂无"}${transportHint}\n等待时间 ${best.maxDuration} 分钟（最慢的人到达时间）。`;
 }
 
 // ============================================================
