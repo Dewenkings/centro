@@ -6,9 +6,9 @@ Protect the public live-search endpoint from accidental overuse and basic abuse 
 
 The production defaults are:
 
-- 3 accepted live searches per client IP per Beijing calendar day.
+- 5 accepted live searches per client IP per Beijing calendar day.
 - 30 accepted live searches across the whole site per Beijing calendar day.
-- 2 accepted live searches per client IP in a 10-minute fixed window that starts with the first accepted request.
+- 3 accepted live searches per client IP in a 10-minute fixed window that starts with the first accepted request.
 - The static preset does not call `/api/agent` and never consumes quota.
 
 An anonymous visitor is identified by IP, not by a durable user account. Shared networks may therefore share a quota, while changing networks may produce a new quota.
@@ -39,9 +39,9 @@ Daily keys include the Beijing date (`Asia/Shanghai`) and expire shortly after t
 Defaults can be tuned without code changes:
 
 ```text
-DEMO_DAILY_PER_IP=3
+DEMO_DAILY_PER_IP=5
 DEMO_DAILY_GLOBAL=30
-DEMO_BURST_PER_IP=2
+DEMO_BURST_PER_IP=3
 DEMO_BURST_WINDOW_SECONDS=600
 ```
 
@@ -72,9 +72,9 @@ If Upstash credentials are missing or Redis cannot confirm the quota, the live-s
 Automated tests cover:
 
 - Atomic acceptance below all limits.
-- Per-IP daily rejection at the fourth accepted request.
+- Per-IP daily rejection at the sixth request.
 - Global daily rejection at the thirty-first accepted request.
-- Burst rejection at the third request inside ten minutes.
+- Burst rejection at the fourth request inside ten minutes.
 - Independent IP counters sharing one global counter.
 - Beijing-date rollover and key expiry calculations.
 - Missing credentials and Redis failures fail closed without calling the Agent graph.

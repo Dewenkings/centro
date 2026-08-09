@@ -141,9 +141,9 @@ UPSTASH_REDIS_REST_URL=your_upstash_rest_url
 UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token
 
 DEMO_RATE_LIMIT_ENABLED=true
-DEMO_DAILY_PER_IP=3
+DEMO_DAILY_PER_IP=5
 DEMO_DAILY_GLOBAL=30
-DEMO_BURST_PER_IP=2
+DEMO_BURST_PER_IP=3
 DEMO_BURST_WINDOW_SECONDS=600
 ```
 
@@ -182,9 +182,9 @@ The application also applies these cost boundaries:
 - 20 retained chat messages;
 - 4 participants;
 - 5 routed venue candidates;
-- 3 accepted live searches per client IP per Beijing calendar day;
+- 5 accepted live searches per client IP per Beijing calendar day;
 - 30 accepted live searches across the deployment per Beijing calendar day;
-- 2 accepted live searches per client IP per 10-minute fixed window.
+- 3 accepted live searches per client IP per 10-minute fixed window.
 
 All three counters are checked and incremented atomically in shared Upstash Redis before any LLM or AMap call. Daily limits reset at Beijing midnight. If credentials, Redis, or live capacity are unavailable, the endpoint fails closed while the zero-cost preset remains unlimited.
 

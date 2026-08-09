@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace Centro's process-local demo throttle with reliable atomic Upstash quotas of 3 accepted requests per IP per Beijing day, 30 accepted requests globally per Beijing day, and 2 accepted requests per IP per 10-minute fixed window.
+**Goal:** Replace Centro's process-local demo throttle with reliable atomic Upstash quotas of 5 accepted requests per IP per Beijing day, 30 accepted requests globally per Beijing day, and 3 accepted requests per IP per 10-minute fixed window.
 
 **Architecture:** A focused `lib/demo/quota.ts` module owns configuration, Beijing-day calculations, anonymized client keys, the atomic Redis script, and typed results. `POST /api/agent` validates input and checks this quota before invoking the Agent graph. Upstash failures fail closed for live search while the client-side static preset remains independent.
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Default limits are exactly 3 per IP per Beijing calendar day, 30 globally per Beijing calendar day, and 2 per IP per 600-second fixed window.
+- Default limits are exactly 5 per IP per Beijing calendar day, 30 globally per Beijing calendar day, and 3 per IP per 600-second fixed window.
 - Only accepted live searches increment counters; all three counters update atomically.
 - Raw IP addresses and credentials must never be stored or logged.
 - Missing credentials and Redis errors must prevent LLM and AMap calls with HTTP 503.
@@ -66,7 +66,7 @@ test("maps Redis rejection reasons to stable quota codes", async () => {
 });
 ```
 
-Also assert defaults `3`, `30`, `2`, and `600`; accepted tuples expose remaining counts; global and burst reasons map correctly; generated keys never include the raw IP; missing credentials and thrown Redis calls return `QUOTA_UNAVAILABLE`.
+Also assert defaults `5`, `30`, `3`, and `600`; accepted tuples expose remaining counts; global and burst reasons map correctly; generated keys never include the raw IP; missing credentials and thrown Redis calls return `QUOTA_UNAVAILABLE`.
 
 - [ ] **Step 3: Run the focused tests and verify RED**
 
@@ -111,9 +111,9 @@ Implement Beijing time using the fixed UTC+8 offset, HMAC-SHA256 the client ID w
 Use environment defaults:
 
 ```ts
-const clientDailyLimit = readPositiveInteger(env.DEMO_DAILY_PER_IP, 3);
+const clientDailyLimit = readPositiveInteger(env.DEMO_DAILY_PER_IP, 5);
 const globalDailyLimit = readPositiveInteger(env.DEMO_DAILY_GLOBAL, 30);
-const burstLimit = readPositiveInteger(env.DEMO_BURST_PER_IP, 2);
+const burstLimit = readPositiveInteger(env.DEMO_BURST_PER_IP, 3);
 const burstWindowSeconds = readPositiveInteger(env.DEMO_BURST_WINDOW_SECONDS, 600);
 ```
 
@@ -243,9 +243,9 @@ Replace process-local limiter language with the exact production defaults and do
 ```text
 UPSTASH_REDIS_REST_URL
 UPSTASH_REDIS_REST_TOKEN
-DEMO_DAILY_PER_IP=3
+DEMO_DAILY_PER_IP=5
 DEMO_DAILY_GLOBAL=30
-DEMO_BURST_PER_IP=2
+DEMO_BURST_PER_IP=3
 DEMO_BURST_WINDOW_SECONDS=600
 ```
 

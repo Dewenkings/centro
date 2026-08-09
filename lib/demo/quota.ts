@@ -2,9 +2,9 @@ import { createHmac } from "node:crypto";
 import { Redis } from "@upstash/redis";
 
 export const DEFAULT_QUOTA_LIMITS = {
-  clientDaily: 3,
+  clientDaily: 5,
   globalDaily: 30,
-  burst: 2,
+  burst: 3,
   burstWindowSeconds: 600,
 } as const;
 

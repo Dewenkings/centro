@@ -66,14 +66,14 @@ test("uses the Beijing calendar day and next-midnight reset", () => {
 
 test("uses the approved production defaults", () => {
   assert.deepEqual(DEFAULT_QUOTA_LIMITS, {
-    clientDaily: 3,
+    clientDaily: 5,
     globalDaily: 30,
-    burst: 2,
+    burst: 3,
     burstWindowSeconds: 600,
   });
 });
 
-test("accepts three daily requests and rejects the fourth for one client", async () => {
+test("accepts five daily requests and rejects the sixth for one client", async () => {
   const redis = new CounterRedis();
   const env = { ...baseEnv, DEMO_BURST_PER_IP: "100" };
   const options = {
@@ -82,7 +82,7 @@ test("accepts three daily requests and rejects the fourth for one client", async
     now: new Date("2026-08-09T12:00:00.000Z"),
   };
 
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
     assert.equal((await checkPublicDemoQuota("203.0.113.8", options)).allowed, true);
   }
   const blocked = await checkPublicDemoQuota("203.0.113.8", options);
@@ -114,7 +114,7 @@ test("rejects the thirty-first accepted request across independent clients", asy
   if (!blocked.allowed) assert.equal(blocked.code, "GLOBAL_DAILY_LIMIT");
 });
 
-test("rejects the third request inside the burst window", async () => {
+test("rejects the fourth request inside the burst window", async () => {
   const redis = new CounterRedis();
   const options = {
     env: baseEnv,
@@ -122,6 +122,7 @@ test("rejects the third request inside the burst window", async () => {
     now: new Date("2026-08-09T12:00:00.000Z"),
   };
 
+  assert.equal((await checkPublicDemoQuota("192.0.2.10", options)).allowed, true);
   assert.equal((await checkPublicDemoQuota("192.0.2.10", options)).allowed, true);
   assert.equal((await checkPublicDemoQuota("192.0.2.10", options)).allowed, true);
   const blocked = await checkPublicDemoQuota("192.0.2.10", options);

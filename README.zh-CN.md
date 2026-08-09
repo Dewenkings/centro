@@ -141,9 +141,9 @@ UPSTASH_REDIS_REST_URL=your_upstash_rest_url
 UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token
 
 DEMO_RATE_LIMIT_ENABLED=true
-DEMO_DAILY_PER_IP=3
+DEMO_DAILY_PER_IP=5
 DEMO_DAILY_GLOBAL=30
-DEMO_BURST_PER_IP=2
+DEMO_BURST_PER_IP=3
 DEMO_BURST_WINDOW_SECONDS=600
 ```
 
@@ -182,9 +182,9 @@ Fork 项目的开发者应在自己的部署平台配置 Key。真实凭证只�
 - 最多保留 20 条聊天记录；
 - 一次最多 4 位参与者；
 - 最多为 5 个候选场所规划路线；
-- 每个客户端 IP 每个北京时间自然日最多接受 3 次实时搜索；
+- 每个客户端 IP 每个北京时间自然日最多接受 5 次实时搜索；
 - 整个部署每个北京时间自然日最多接受 30 次实时搜索；
-- 每个客户端 IP 在 10 分钟固定窗口内最多接受 2 次实时搜索。
+- 每个客户端 IP 在 10 分钟固定窗口内最多接受 3 次实时搜索。
 
 三个计数器会在调用大模型或高德 API 之前，通过共享的 Upstash Redis 原子检查并递增。每日额度在北京时间零点重置。凭证、Redis 或实时额度不可用时，接口会保护性关闭，零成本示例场景仍可无限体验。
 
