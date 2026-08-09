@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  checkRateLimit,
   getClientIdentifier,
-  resetRateLimits,
   validateAgentRequest,
 } from "../lib/demo/guard";
 
@@ -72,20 +70,4 @@ test("uses the first forwarded address as the client identifier", () => {
   });
 
   assert.equal(getClientIdentifier(headers), "203.0.113.8");
-});
-
-test("limits a client to five requests in ten minutes", () => {
-  resetRateLimits();
-  const now = 1_000_000;
-
-  for (let index = 0; index < 5; index += 1) {
-    assert.equal(checkRateLimit("client-a", now).allowed, true);
-  }
-
-  const blocked = checkRateLimit("client-a", now);
-  assert.equal(blocked.allowed, false);
-  assert.equal(blocked.retryAfterSeconds, 600);
-
-  const afterWindow = checkRateLimit("client-a", now + 600_000);
-  assert.equal(afterWindow.allowed, true);
 });

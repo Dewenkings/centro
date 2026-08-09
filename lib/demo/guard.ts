@@ -93,57 +93,6 @@ export function validateAgentRequest(input: unknown): ValidationResult {
   return { ok: true, value: { message, history, prevState } };
 }
 
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
-
-export interface RateLimitResult {
-  allowed: boolean;
-  retryAfterSeconds: number;
-  remaining: number;
-}
-
-const rateLimits = new Map<string, RateLimitEntry>();
-
-function readPositiveInteger(name: string, fallback: number): number {
-  const parsed = Number.parseInt(process.env[name] || "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-export function checkRateLimit(
-  clientId: string,
-  now: number = Date.now()
-): RateLimitResult {
-  const maxRequests = readPositiveInteger("DEMO_RATE_LIMIT_REQUESTS", 5);
-  const windowMs = readPositiveInteger("DEMO_RATE_LIMIT_WINDOW_MS", 600_000);
-  const current = rateLimits.get(clientId);
-
-  if (!current || now >= current.resetAt) {
-    rateLimits.set(clientId, { count: 1, resetAt: now + windowMs });
-    return {
-      allowed: true,
-      remaining: maxRequests - 1,
-      retryAfterSeconds: Math.ceil(windowMs / 1000),
-    };
-  }
-
-  const retryAfterSeconds = Math.max(
-    1,
-    Math.ceil((current.resetAt - now) / 1000)
-  );
-  if (current.count >= maxRequests) {
-    return { allowed: false, remaining: 0, retryAfterSeconds };
-  }
-
-  current.count += 1;
-  return {
-    allowed: true,
-    remaining: maxRequests - current.count,
-    retryAfterSeconds,
-  };
-}
-
 export function getClientIdentifier(headers: Headers): string {
   const forwarded = headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   return (
@@ -152,8 +101,4 @@ export function getClientIdentifier(headers: Headers): string {
     headers.get("cf-connecting-ip") ||
     "anonymous"
   );
-}
-
-export function resetRateLimits(): void {
-  rateLimits.clear();
 }

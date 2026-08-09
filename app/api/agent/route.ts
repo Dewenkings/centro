@@ -9,11 +9,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { graph } from "@/lib/agent/graph";
 import { GatherState } from "@/types";
-import {
-  checkRateLimit,
-  getClientIdentifier,
-  validateAgentRequest,
-} from "@/lib/demo/guard";
+import { getClientIdentifier, validateAgentRequest } from "@/lib/demo/guard";
+import { checkPublicDemoQuota } from "@/lib/demo/quota";
+import { getQuotaHttpError } from "@/lib/demo/quota-http";
 
 export const maxDuration = 60;
 
@@ -55,17 +53,22 @@ export async function POST(request: NextRequest) {
     }
 
     if (process.env.DEMO_RATE_LIMIT_ENABLED !== "false") {
-      const rateLimit = checkRateLimit(getClientIdentifier(request.headers));
-      if (!rateLimit.allowed) {
+      const quota = await checkPublicDemoQuota(
+        getClientIdentifier(request.headers)
+      );
+      if (!quota.allowed) {
+        const failure = getQuotaHttpError(quota);
         return NextResponse.json(
           {
             success: false,
-            code: "RATE_LIMITED",
-            error: "体验请求过于频繁，请稍后再试。",
+            code: failure.code,
+            error: failure.error,
           },
           {
-            status: 429,
-            headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+            status: failure.status,
+            headers: {
+              "Retry-After": String(failure.retryAfterSeconds),
+            },
           }
         );
       }
