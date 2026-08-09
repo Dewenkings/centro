@@ -35,7 +35,7 @@ export function getQuotaHttpError(result: RejectedQuota): QuotaHttpError {
     return {
       ...base,
       status: 429,
-      error: "你今天的 3 次在线体验已用完，请体验示例场景，明天再来试试。",
+      error: "你今天的在线体验次数已用完，请体验示例场景，明天再来试试。",
     };
   }
 

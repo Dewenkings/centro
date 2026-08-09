@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 
 import {
@@ -146,6 +147,36 @@ test("never sends the raw client IP to Redis", async () => {
   assert.equal(serializedCall.includes(rawIp), false);
 });
 
+test("uses an isolated namespace when one is provided", async () => {
+  const redis = new CounterRedis();
+
+  await checkPublicDemoQuota("203.0.113.8", {
+    env: baseEnv,
+    redis,
+    namespace: "centro:test:isolated",
+    now: new Date("2026-08-09T12:00:00.000Z"),
+  });
+
+  assert.match(redis.calls[0].keys[0], /^centro:test:isolated:/);
+});
+
+test("rejects malformed integer settings instead of partially parsing them", async () => {
+  const redis = new CounterRedis();
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    await checkPublicDemoQuota("203.0.113.8", {
+      env: { ...baseEnv, DEMO_DAILY_PER_IP: "10junk" },
+      redis,
+      now: new Date("2026-08-09T12:00:00.000Z"),
+    });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(redis.calls[0].args[0], DEFAULT_QUOTA_LIMITS.clientDaily);
+});
+
 test("fails closed when credentials are missing", async () => {
   const redis = new CounterRedis();
   const result = await checkPublicDemoQuota("203.0.113.8", {
@@ -168,15 +199,57 @@ test("fails closed when Redis cannot confirm the quota", async () => {
     },
   };
   const originalError = console.error;
-  console.error = () => undefined;
+  let loggedMessage = "";
+  console.error = (message?: unknown) => {
+    loggedMessage = String(message);
+  };
   try {
     const result = await checkPublicDemoQuota("203.0.113.8", {
       env: baseEnv,
       redis,
+      requestId: "request-123",
     });
     assert.equal(result.allowed, false);
     if (!result.allowed) assert.equal(result.code, "QUOTA_UNAVAILABLE");
+    assert.match(loggedMessage, /request-123/);
   } finally {
     console.error = originalError;
+  }
+});
+
+test("fails closed within the configured timeout when Upstash stalls", async () => {
+  const server = createServer((_request, response) => {
+    setTimeout(() => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end("{}");
+    }, 500);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.notEqual(address, null);
+  assert.equal(typeof address, "object");
+  const port = typeof address === "object" && address ? address.port : 0;
+  const originalError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const startedAt = Date.now();
+    const result = await checkPublicDemoQuota("203.0.113.8", {
+      env: {
+        ...baseEnv,
+        UPSTASH_REDIS_REST_URL: `http://127.0.0.1:${port}`,
+        DEMO_RATE_LIMIT_TIMEOUT_MS: "50",
+      },
+    });
+    const elapsed = Date.now() - startedAt;
+
+    assert.equal(result.allowed, false);
+    if (!result.allowed) assert.equal(result.code, "QUOTA_UNAVAILABLE");
+    assert.ok(elapsed < 300, `quota check took ${elapsed}ms`);
+  } finally {
+    console.error = originalError;
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
   }
 });

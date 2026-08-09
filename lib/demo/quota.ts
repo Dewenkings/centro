@@ -48,6 +48,8 @@ export interface QuotaCheckOptions {
   now?: Date;
   env?: NodeJS.ProcessEnv;
   redis?: QuotaRedis;
+  namespace?: string;
+  requestId?: string;
 }
 
 type RedisQuotaReply = [
@@ -61,6 +63,7 @@ type RedisQuotaReply = [
 
 const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DAILY_KEY_GRACE_SECONDS = 60 * 60;
+const DEFAULT_REDIS_TIMEOUT_MS = 1_500;
 
 const QUOTA_SCRIPT = `
 local globalCount = tonumber(redis.call("GET", KEYS[1]) or "0")
@@ -106,9 +109,24 @@ return {
 }
 `;
 
-function readPositiveInteger(value: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(value || "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+function readPositiveInteger(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number
+): number {
+  const value = env[name];
+  if (!value) return fallback;
+  if (!/^[1-9]\d*$/.test(value)) {
+    console.error(`[demo-quota] Invalid ${name}; using default`);
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    console.error(`[demo-quota] Invalid ${name}; using default`);
+    return fallback;
+  }
+  return parsed;
 }
 
 export function getBeijingWindow(now: Date): BeijingWindow {
@@ -177,28 +195,43 @@ export async function checkPublicDemoQuota(
     const now = options.now ?? new Date();
     const window = getBeijingWindow(now);
     const clientHash = anonymizeClient(clientId, token);
-    const keyPrefix = `centro:quota:{${window.day}}`;
+    const namespace = options.namespace ?? "centro:quota";
+    const keyPrefix = `${namespace}:{${window.day}}`;
     const limits = {
       clientDaily: readPositiveInteger(
-        env.DEMO_DAILY_PER_IP,
+        env,
+        "DEMO_DAILY_PER_IP",
         DEFAULT_QUOTA_LIMITS.clientDaily
       ),
       globalDaily: readPositiveInteger(
-        env.DEMO_DAILY_GLOBAL,
+        env,
+        "DEMO_DAILY_GLOBAL",
         DEFAULT_QUOTA_LIMITS.globalDaily
       ),
       burst: readPositiveInteger(
-        env.DEMO_BURST_PER_IP,
+        env,
+        "DEMO_BURST_PER_IP",
         DEFAULT_QUOTA_LIMITS.burst
       ),
       burstWindowSeconds: readPositiveInteger(
-        env.DEMO_BURST_WINDOW_SECONDS,
+        env,
+        "DEMO_BURST_WINDOW_SECONDS",
         DEFAULT_QUOTA_LIMITS.burstWindowSeconds
       ),
     };
+    const timeoutMs = readPositiveInteger(
+      env,
+      "DEMO_RATE_LIMIT_TIMEOUT_MS",
+      DEFAULT_REDIS_TIMEOUT_MS
+    );
     const redis =
       options.redis ??
-      (new Redis({ url, token }) as unknown as QuotaRedis);
+      (new Redis({
+        url,
+        token,
+        retry: false,
+        signal: () => AbortSignal.timeout(timeoutMs),
+      }) as unknown as QuotaRedis);
     const reply = parseReply(
       await redis.eval<RedisQuotaReply>(
         QUOTA_SCRIPT,
@@ -236,7 +269,10 @@ export async function checkPublicDemoQuota(
       retryAfterSeconds: Math.max(1, reply[5]),
     };
   } catch {
-    console.error("[demo-quota] Unable to confirm quota");
+    const requestContext = options.requestId
+      ? ` (${options.requestId})`
+      : "";
+    console.error(`[demo-quota] Unable to confirm quota${requestContext}`);
     return {
       allowed: false,
       code: "QUOTA_UNAVAILABLE",
