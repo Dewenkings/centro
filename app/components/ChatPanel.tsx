@@ -12,9 +12,15 @@ interface ChatPanelProps {
   messages: Message[];
   onSend: (text: string) => void;
   loading: boolean;
+  streamingContent?: string;
 }
 
-export default function ChatPanel({ messages, onSend, loading }: ChatPanelProps) {
+export default function ChatPanel({
+  messages,
+  onSend,
+  loading,
+  streamingContent,
+}: ChatPanelProps) {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -83,7 +89,21 @@ export default function ChatPanel({ messages, onSend, loading }: ChatPanelProps)
             </div>
           </div>
         ))}
-        {loading && (
+        {/* 流式进度消息 */}
+        {loading && streamingContent && (
+          <div className="flex gap-2">
+            <div className="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
+              <Bot size={14} />
+            </div>
+            <div className="bg-gray-100 rounded-2xl rounded-bl-sm px-3 py-2 text-sm text-gray-800 whitespace-pre-wrap">
+              {streamingContent}
+              <span className="inline-block w-1.5 h-4 bg-emerald-500 ml-0.5 animate-pulse align-text-bottom" />
+            </div>
+          </div>
+        )}
+
+        {/* 纯 loading 无内容时的 spinner */}
+        {loading && !streamingContent && (
           <div className="flex gap-2">
             <div className="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
               <Bot size={14} />

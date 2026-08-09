@@ -1,8 +1,9 @@
 /**
- * Next.js API Route — Agent 入口
+ * Next.js API Route — Agent 入口（SSE 流式输出）
  * POST /api/agent
  *
- * Day 4 升级：支持 prevState 传递，实现多轮对话和约束迭代
+ * 流式渲染改造：graph.invoke → graph.stream
+ * 每个节点执行完成后推送一次 state 更新，前端实时渲染进度
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -26,40 +27,76 @@ export async function POST(request: NextRequest) {
       { role: "user" as const, content: message },
     ];
 
-    // 合并 prevState（约束迭代时保留 participants、centerPoint 等）
     const initialState: Partial<GatherState> = {
       ...prevState,
       conversationHistory,
     };
 
-    const result = await graph.invoke(initialState);
+    const encoder = new TextEncoder();
 
-    const lastAssistantMsg = [...result.conversationHistory]
-      .reverse()
-      .find((m) => m.role === "assistant");
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (data: Record<string, unknown>) => {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
+          );
+        };
 
-    return NextResponse.json({
-      success: true,
-      status: result.status,
-      reply: lastAssistantMsg?.content || "处理完成",
-      participants: result.participants,
-      centerPoint: result.centerPoint,
-      keywords: result.keywords,
-      candidates: result.candidates,
-      recommendations: result.recommendations,
-      missingInfo: result.missingInfo,
-      // 返回完整 state，前端可用于下一轮迭代
-      state: {
-        participants: result.participants,
-        centerPoint: result.centerPoint,
-        keywords: result.keywords,
-        city: result.city,
+        try {
+          // ========== 核心改造：graph.stream 替代 graph.invoke ==========
+          const eventStream = await graph.stream(initialState, {
+            streamMode: "values",
+          });
+
+          for await (const state of eventStream) {
+            const lastAssistantMsg = [...state.conversationHistory]
+              .reverse()
+              .find((m) => m.role === "assistant");
+
+            send({
+              type: "state",
+              status: state.status,
+              reply: lastAssistantMsg?.content || "",
+              participants: state.participants,
+              centerPoint: state.centerPoint,
+              keywords: state.keywords,
+              candidates: state.candidates,
+              recommendations: state.recommendations,
+              missingInfo: state.missingInfo,
+              state: {
+                participants: state.participants,
+                centerPoint: state.centerPoint,
+                keywords: state.keywords,
+                city: state.city,
+              },
+            });
+          }
+
+          send({ type: "done" });
+        } catch (error) {
+          console.error("Stream error:", error);
+          send({
+            type: "error",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
       },
     });
   } catch (error) {
     console.error("Agent API Error:", error);
+    const msg = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { success: false, error: "Internal Server Error" },
+      { success: false, error: msg },
       { status: 500 }
     );
   }
