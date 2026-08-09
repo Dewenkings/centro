@@ -12,6 +12,7 @@
   "dependencies": {
     "@langchain/core": "^0.3.0",
     "@langchain/langgraph": "^0.2.0",
+    "@upstash/redis": "^1.38.2",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.460.0",
     "next": "^15.5.15",
