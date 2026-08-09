@@ -88,7 +88,7 @@ Then refine it conversationally:
 | Layer | Responsibility | Technology |
 |---|---|---|
 | Interface | Chat, map, recommendation cards, responsive views | Next.js 15, React 19, Tailwind CSS, Leaflet |
-| API | Request validation, best-effort throttling, SSE transport | Next.js Route Handler |
+| API | Request validation, durable quotas, SSE transport | Next.js Route Handler + Upstash Redis |
 | Agent | Intent parsing, clarification, state transitions, ranking | LangGraph.js |
 | Intelligence | Structured intent extraction | DeepSeek through an OpenAI-compatible API |
 | Location | Geocoding, nearby POIs, public-transit/driving routes | AMap Web Service |
@@ -110,7 +110,8 @@ Important modules:
 app/api/agent/route.ts       request guard + SSE Agent endpoint
 lib/agent/graph.ts           LangGraph workflow and fairness ranking
 lib/agent/limits.ts          participant and candidate cost boundaries
-lib/demo/guard.ts            input validation and best-effort rate limiting
+lib/demo/guard.ts            input validation and client identification
+lib/demo/quota.ts            atomic Upstash public-demo quotas
 lib/demo/presets.ts          credential-free showcase scenarios
 lib/tools/amap.ts            AMap geocoding, POI, and route adapters
 app/components/MapView.tsx   map visualization
@@ -136,9 +137,14 @@ LLM_MODEL=deepseek-chat
 
 AMAP_API_KEY=your_amap_web_service_key
 
+UPSTASH_REDIS_REST_URL=your_upstash_rest_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token
+
 DEMO_RATE_LIMIT_ENABLED=true
-DEMO_RATE_LIMIT_REQUESTS=5
-DEMO_RATE_LIMIT_WINDOW_MS=600000
+DEMO_DAILY_PER_IP=3
+DEMO_DAILY_GLOBAL=30
+DEMO_BURST_PER_IP=2
+DEMO_BURST_WINDOW_SECONDS=600
 ```
 
 Start the development server:
@@ -156,7 +162,7 @@ npm test
 npm run build
 ```
 
-The test suite covers public request validation, fixed-window throttling, and Agent cost boundaries.
+The test suite covers public request validation, atomic daily and burst quotas, Beijing-day rollover, failure protection, mobile layout, and Agent cost boundaries.
 
 ## Deployment and API keys
 
@@ -166,8 +172,9 @@ For Vercel:
 
 1. Import the forked GitHub repository.
 2. Add `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, and `AMAP_API_KEY` under Project Settings → Environment Variables.
-3. Keep the demo rate-limit variables enabled.
-4. Deploy the `main` branch.
+3. Connect an Upstash Redis database from Vercel Marketplace. Keep the generated `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` server-only.
+4. Keep the demo quota variables enabled with the values shown above.
+5. Deploy the `main` branch.
 
 The application also applies these cost boundaries:
 
@@ -175,16 +182,18 @@ The application also applies these cost boundaries:
 - 20 retained chat messages;
 - 4 participants;
 - 5 routed venue candidates;
-- 5 custom requests per client every 10 minutes by default.
+- 3 accepted live searches per client IP per Beijing calendar day;
+- 30 accepted live searches across the deployment per Beijing calendar day;
+- 2 accepted live searches per client IP per 10-minute fixed window.
 
-The included limiter is **best-effort and process-local**. Serverless instances do not share memory, so a public production deployment should also configure Vercel Firewall rate limiting or another durable edge/store-backed limiter. The preset remains available when live credentials or capacity are unavailable.
+All three counters are checked and incremented atomically in shared Upstash Redis before any LLM or AMap call. Daily limits reset at Beijing midnight. If credentials, Redis, or live capacity are unavailable, the endpoint fails closed while the zero-cost preset remains unlimited.
 
 ## Current limitations
 
 - The product currently optimizes one city's local meetup scenario; inter-city recommendations require a different transport model.
 - Route planning is bounded for public-demo cost control and is not an exhaustive venue search.
 - Venue availability, reservations, dietary constraints, and live congestion are not yet modeled.
-- The process-local limiter is not a substitute for deployment-platform abuse protection.
+- IP-based anonymous quotas are not user accounts: shared networks share a quota, while changing networks may produce a new quota.
 - Location text is sent to the configured LLM and map providers during live search; deployments should publish an appropriate privacy notice before collecting real user data.
 
 ## Roadmap
@@ -192,7 +201,7 @@ The included limiter is **best-effort and process-local**. Serverless instances 
 - Weighted preferences for cost, rating, cuisine, and accessibility
 - Shareable meetup plans and participant voting
 - Arrival-time windows and opening-hours checks
-- Durable distributed rate limiting and anonymous usage analytics
+- Authenticated usage tiers and privacy-preserving usage analytics
 - Evaluation fixtures for intent extraction and ranking quality
 
 ## License

@@ -88,7 +88,7 @@ Centro 把这类群聊协调问题转换成一个可以理解、可以检查、�
 | 层级 | 职责 | 技术 |
 |---|---|---|
 | 交互界面 | 聊天、地图、推荐卡片和响应式视图 | Next.js 15、React 19、Tailwind CSS、Leaflet |
-| API | 请求校验、基础限流和 SSE 传输 | Next.js Route Handler |
+| API | 请求校验、可靠额度控制和 SSE 传输 | Next.js Route Handler + Upstash Redis |
 | Agent | 意图解析、追问、状态流转和排序 | LangGraph.js |
 | 大模型 | 结构化意图提取 | DeepSeek OpenAI-compatible API |
 | 地图服务 | 地理编码、POI 搜索、公交/驾车路线 | 高德地图 Web 服务 |
@@ -110,7 +110,8 @@ searchPoi → planRoutes → rankResults → END
 app/api/agent/route.ts       请求保护与 SSE Agent 接口
 lib/agent/graph.ts           LangGraph 工作流与公平性排序
 lib/agent/limits.ts          参与者和候选地点数量边界
-lib/demo/guard.ts            输入校验和基础限流
+lib/demo/guard.ts            输入校验和客户端识别
+lib/demo/quota.ts            Upstash 原子公共 Demo 额度
 lib/demo/presets.ts          无需凭证的示例场景
 lib/tools/amap.ts            高德地理编码、POI 和路线封装
 app/components/MapView.tsx   地图可视化
@@ -136,9 +137,14 @@ LLM_MODEL=deepseek-chat
 
 AMAP_API_KEY=your_amap_web_service_key
 
+UPSTASH_REDIS_REST_URL=your_upstash_rest_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token
+
 DEMO_RATE_LIMIT_ENABLED=true
-DEMO_RATE_LIMIT_REQUESTS=5
-DEMO_RATE_LIMIT_WINDOW_MS=600000
+DEMO_DAILY_PER_IP=3
+DEMO_DAILY_GLOBAL=30
+DEMO_BURST_PER_IP=2
+DEMO_BURST_WINDOW_SECONDS=600
 ```
 
 启动开发环境：
@@ -156,7 +162,7 @@ npm test
 npm run build
 ```
 
-测试覆盖公开请求校验、固定窗口限流，以及 Agent 成本边界。
+测试覆盖公开请求校验、原子日额度与突发额度、北京时间日期切换、故障保护、移动端布局，以及 Agent 成本边界。
 
 ## 部署与 API Key
 
@@ -166,8 +172,9 @@ Fork 项目的开发者应在自己的部署平台配置 Key。真实凭证只�
 
 1. 导入 Fork 后的 GitHub 仓库。
 2. 在 Project Settings → Environment Variables 配置 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 和 `AMAP_API_KEY`。
-3. 保持 Demo 限流变量开启。
-4. 部署 `main` 分支。
+3. 从 Vercel Marketplace 连接 Upstash Redis，并保持自动生成的 `UPSTASH_REDIS_REST_URL` 和 `UPSTASH_REDIS_REST_TOKEN` 仅服务端可见。
+4. 保持上方 Demo 额度变量及其默认值启用。
+5. 部署 `main` 分支。
 
 应用本身还包含以下成本边界：
 
@@ -175,16 +182,18 @@ Fork 项目的开发者应在自己的部署平台配置 Key。真实凭证只�
 - 最多保留 20 条聊天记录；
 - 一次最多 4 位参与者；
 - 最多为 5 个候选场所规划路线；
-- 默认每位访客 10 分钟内最多提交 5 次自定义请求。
+- 每个客户端 IP 每个北京时间自然日最多接受 3 次实时搜索；
+- 整个部署每个北京时间自然日最多接受 30 次实时搜索；
+- 每个客户端 IP 在 10 分钟固定窗口内最多接受 2 次实时搜索。
 
-仓库内限流是**进程内 best-effort 防护**。Serverless 实例之间不共享内存，正式公开部署还应配置 Vercel Firewall 限流，或接入持久化的边缘/存储型限流。实时 Key 或额度不可用时，示例场景仍然可以体验。
+三个计数器会在调用大模型或高德 API 之前，通过共享的 Upstash Redis 原子检查并递增。每日额度在北京时间零点重置。凭证、Redis 或实时额度不可用时，接口会保护性关闭，零成本示例场景仍可无限体验。
 
 ## 当前限制
 
 - 当前主要优化同一城市内的聚会场景，跨城市推荐需要不同的交通模型。
 - 为控制公共 Demo 成本，路线规划有数量上限，不是穷举式餐厅搜索。
 - 暂未处理预约余位、营业时间、饮食禁忌和实时拥堵。
-- 进程内限流不能替代部署平台的滥用防护。
+- 基于 IP 的匿名额度不等于用户账户：共享网络会共享额度，切换网络可能得到新的额度。
 - 实时搜索会把位置文本发送给已配置的大模型和地图服务；在收集真实用户数据前，应补充适合部署地区的隐私说明。
 
 ## Roadmap
@@ -192,7 +201,7 @@ Fork 项目的开发者应在自己的部署平台配置 Key。真实凭证只�
 - 费用、评分、菜系和无障碍条件的权重配置
 - 可分享聚会方案和多人投票
 - 到达时间窗口与营业时间检查
-- 持久化分布式限流和匿名使用分析
+- 登录用户分级额度与隐私友好的使用分析
 - 意图解析与排序质量评测集
 
 ## License
