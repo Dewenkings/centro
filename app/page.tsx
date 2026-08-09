@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import ChatPanel from "./components/ChatPanel";
 import RecommendationCards from "./components/RecommendationCards";
 import { Participant, Recommendation, AgentStatus } from "@/types";
+import { DEMO_PRESETS } from "@/lib/demo/presets";
 
 // Leaflet 需要客户端渲染，避免 SSR
 const MapView = dynamic(() => import("./components/MapView"), {
@@ -63,6 +64,7 @@ export default function Home() {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   // 保存 Agent 返回的 state，用于约束迭代
   const [agentState, setAgentState] = useState<Record<string, unknown>>({});
+  const [mobileView, setMobileView] = useState<"chat" | "results">("chat");
 
   // 可拖拽分栏
   const [chatWidth, setChatWidth] = useState(400);
@@ -82,6 +84,21 @@ export default function Home() {
       document.removeEventListener("mouseup", handleUp);
     };
   }, [isDragging]);
+
+  const handlePreset = useCallback((presetId: string) => {
+    const preset = DEMO_PRESETS.find((item) => item.id === presetId);
+    if (!preset) return;
+
+    setMessages([
+      { role: "user", content: preset.userMessage },
+      { role: "assistant", content: preset.assistantMessage },
+    ]);
+    setParticipants(preset.participants);
+    setCenterPoint(preset.centerPoint);
+    setRecommendations(preset.recommendations);
+    setAgentState({});
+    setMobileView("results");
+  }, []);
 
   /** ========== 核心改造：流式消费 SSE ========== */
   const handleSend = useCallback(
@@ -103,7 +120,8 @@ export default function Home() {
         });
 
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+          const errorBody = await res.json().catch(() => null);
+          throw new Error(errorBody?.error || `请求失败（${res.status}）`);
         }
 
         const reader = res.body?.getReader();
@@ -135,6 +153,9 @@ export default function Home() {
                   setParticipants(data.participants || []);
                   setCenterPoint(data.centerPoint);
                   setRecommendations(data.recommendations || []);
+                  if (data.recommendations?.length > 0) {
+                    setMobileView("results");
+                  }
                   if (data.state) setAgentState(data.state);
 
                   // 更新流式进度文案
@@ -148,7 +169,8 @@ export default function Home() {
                     finalReply = data.reply as string;
                   }
                 } else if (data.type === "error") {
-                  setStreamingContent(`❌ 出错：${data.error}`);
+                  finalReply = `❌ ${data.error}`;
+                  setStreamingContent(finalReply);
                 }
               } catch {
                 // 忽略解析失败的行
@@ -177,6 +199,12 @@ export default function Home() {
     },
     [messages, agentState]
   );
+
+  const presetOptions = DEMO_PRESETS.map(({ id, label, eyebrow }) => ({
+    id,
+    label,
+    eyebrow,
+  }));
 
   return (
     <main
@@ -215,17 +243,65 @@ export default function Home() {
           onSend={handleSend}
           loading={loading}
           streamingContent={streamingContent}
+          presets={presetOptions}
+          onSelectPreset={handlePreset}
         />
       </div>
 
-      {/* 移动端全屏聊天 */}
-      <div className="md:hidden w-full h-full">
-        <ChatPanel
-          messages={messages}
-          onSend={handleSend}
-          loading={loading}
-          streamingContent={streamingContent}
-        />
+      {/* 移动端：对话与地图结果可切换 */}
+      <div className="md:hidden flex w-full min-w-0 h-full flex-col overflow-hidden bg-[#f4f6f2]">
+        <div className="grid grid-cols-2 gap-1 border-b border-slate-200 bg-white p-1.5">
+          <button
+            type="button"
+            onClick={() => setMobileView("chat")}
+            aria-pressed={mobileView === "chat"}
+            className={`rounded-lg px-3 py-2 text-xs font-bold transition ${
+              mobileView === "chat"
+                ? "bg-slate-900 text-white"
+                : "text-slate-500 hover:bg-slate-100"
+            }`}
+          >
+            对话
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileView("results")}
+            aria-pressed={mobileView === "results"}
+            className={`rounded-lg px-3 py-2 text-xs font-bold transition ${
+              mobileView === "results"
+                ? "bg-emerald-600 text-white"
+                : "text-slate-500 hover:bg-slate-100"
+            }`}
+          >
+            地图与结果 {recommendations.length > 0 ? `(${recommendations.length})` : ""}
+          </button>
+        </div>
+
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+          {mobileView === "chat" ? (
+            <ChatPanel
+              messages={messages}
+              onSend={handleSend}
+              loading={loading}
+              streamingContent={streamingContent}
+              presets={presetOptions}
+              onSelectPreset={handlePreset}
+            />
+          ) : (
+            <div className="flex h-full flex-col">
+              <div className="min-h-0 flex-[3]">
+                <MapView
+                  participants={participants}
+                  centerPoint={centerPoint}
+                  recommendations={recommendations}
+                />
+              </div>
+              <div className="min-h-[240px] flex-[2] overflow-hidden border-t border-slate-200 bg-white">
+                <RecommendationCards recommendations={recommendations} />
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );
