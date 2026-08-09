@@ -164,6 +164,9 @@ export default function ChatPanel({
       <form
         onSubmit={handleSubmit}
         className="px-4 py-3 border-t border-gray-100 bg-white"
+        style={{
+          paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))",
+        }}
       >
         <div className="flex gap-2">
           <input

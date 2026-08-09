@@ -14,7 +14,7 @@ Describe where everyone starts and what the group wants to do. Centro interprets
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agent-0F766E)
 ![AMap](https://img.shields.io/badge/AMap-Web%20Service-1677FF)
 
-[中文文档](./README.zh-CN.md) · [Try the preset](#zero-cost-showcase) · [Quick start](#quick-start) · [Product design](./docs/superpowers/specs/2026-08-09-public-demo-portfolio-design.md)
+[Live Demo](https://centro-nine.vercel.app/) · [中文文档](./README.zh-CN.md) · [Try the preset](#zero-cost-showcase) · [Quick start](#quick-start) · [Product design](./docs/superpowers/specs/2026-08-09-public-demo-portfolio-design.md)
 
 </div>
 

@@ -14,7 +14,7 @@
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agent-0F766E)
 ![高德地图](https://img.shields.io/badge/高德地图-Web服务-1677FF)
 
-[English](./README.md) · [体验示例场景](#零成本示例场景) · [快速开始](#快速开始) · [产品设计](./docs/superpowers/specs/2026-08-09-public-demo-portfolio-design.md)
+[在线体验](https://centro-nine.vercel.app/) · [English](./README.md) · [体验示例场景](#零成本示例场景) · [快速开始](#快速开始) · [产品设计](./docs/superpowers/specs/2026-08-09-public-demo-portfolio-design.md)
 
 </div>
 

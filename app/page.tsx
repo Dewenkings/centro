@@ -208,7 +208,7 @@ export default function Home() {
 
   return (
     <main
-      className={`flex h-screen w-screen overflow-hidden bg-gray-50 ${
+      className={`flex h-full w-full overflow-hidden bg-gray-50 ${
         isDragging ? "select-none" : ""
       }`}
     >
