@@ -9,18 +9,69 @@
 import { NextRequest, NextResponse } from "next/server";
 import { graph } from "@/lib/agent/graph";
 import { GatherState } from "@/types";
+import {
+  checkRateLimit,
+  getClientIdentifier,
+  validateAgentRequest,
+} from "@/lib/demo/guard";
+
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { message, history = [], prevState = {} } = body;
+  const requestId = crypto.randomUUID();
 
-    if (!message || typeof message !== "string") {
+  try {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
       return NextResponse.json(
-        { success: false, error: "message is required" },
+        { success: false, code: "INVALID_JSON", error: "请求格式不正确。" },
         { status: 400 }
       );
     }
+
+    const validation = validateAgentRequest(body);
+    if (!validation.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: validation.code,
+          error: validation.error,
+        },
+        { status: validation.status }
+      );
+    }
+
+    if (!process.env.LLM_API_KEY || !process.env.AMAP_API_KEY) {
+      return NextResponse.json(
+        {
+          success: false,
+          code: "LIVE_DEMO_UNAVAILABLE",
+          error: "在线搜索暂时不可用，请先体验示例场景。",
+        },
+        { status: 503 }
+      );
+    }
+
+    if (process.env.DEMO_RATE_LIMIT_ENABLED !== "false") {
+      const rateLimit = checkRateLimit(getClientIdentifier(request.headers));
+      if (!rateLimit.allowed) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "RATE_LIMITED",
+            error: "体验请求过于频繁，请稍后再试。",
+          },
+          {
+            status: 429,
+            headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+          }
+        );
+      }
+    }
+
+    const { message, history, prevState } = validation.value;
 
     const conversationHistory = [
       ...history,
@@ -74,10 +125,12 @@ export async function POST(request: NextRequest) {
 
           send({ type: "done" });
         } catch (error) {
-          console.error("Stream error:", error);
+          console.error(`[${requestId}] Agent stream error:`, error);
           send({
             type: "error",
-            error: error instanceof Error ? error.message : String(error),
+            code: "AGENT_FAILED",
+            error: "处理请求时出现问题，请稍后重试。",
+            requestId,
           });
         } finally {
           controller.close();
@@ -93,10 +146,14 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error("Agent API Error:", error);
-    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[${requestId}] Agent API error:`, error);
     return NextResponse.json(
-      { success: false, error: msg },
+      {
+        success: false,
+        code: "INTERNAL_ERROR",
+        error: "服务暂时不可用，请稍后重试。",
+        requestId,
+      },
       { status: 500 }
     );
   }
