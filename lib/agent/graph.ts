@@ -26,6 +26,12 @@ import {
   computeCentroid,
 } from "@/lib/tools/amap";
 import { chatJSON } from "@/lib/llm";
+import {
+  MAX_CANDIDATES,
+  MAX_PARTICIPANTS,
+  limitCandidates,
+  limitParticipants,
+} from "@/lib/agent/limits";
 
 // ============================================================
 // 1. State 定义
@@ -187,6 +193,19 @@ async function parseInputNode(
 
   if (!lastUserMsg) {
     return { missingInfo: "未收到用户输入", status: "collecting" };
+  }
+
+  if (state.participants.length > MAX_PARTICIPANTS) {
+    return {
+      missingInfo: `公开体验最多支持 ${MAX_PARTICIPANTS} 位参与者`,
+      status: "collecting",
+      conversationHistory: [
+        {
+          role: "assistant",
+          content: `为了控制路线计算时间，公开体验一次最多支持 ${MAX_PARTICIPANTS} 位参与者。`,
+        },
+      ],
+    };
   }
 
   const hasPrevState =
@@ -371,9 +390,24 @@ async function parseInputNode(
     };
   }
 
-  const participants: Participant[] = (parsed.participants || [])
+  const parsedParticipants: Participant[] = (parsed.participants || [])
     .filter((p) => p?.name && p?.address)
     .map((p) => ({ name: p.name!, address: p.address! }));
+
+  if (parsedParticipants.length > MAX_PARTICIPANTS) {
+    return {
+      missingInfo: `公开体验最多支持 ${MAX_PARTICIPANTS} 位参与者`,
+      status: "collecting",
+      conversationHistory: [
+        {
+          role: "assistant",
+          content: `为了控制路线计算时间，请先选择最多 ${MAX_PARTICIPANTS} 位参与者。`,
+        },
+      ],
+    };
+  }
+
+  const participants = limitParticipants(parsedParticipants);
 
   if (participants.length < 1) {
     return {
@@ -471,7 +505,7 @@ async function searchPoiNode(
       state.centerPoint,
       strategy.keywords,
       strategy.radius,
-      10
+      MAX_CANDIDATES
     );
 
     if (!("error" in result) && result.pois.length > 0) {
@@ -481,7 +515,7 @@ async function searchPoiNode(
           : undefined;
 
       return {
-        candidates: result.pois,
+        candidates: limitCandidates(result.pois),
         keywords: strategy.keywords,
         status: "planning",
         missingInfo: undefined,
@@ -514,8 +548,10 @@ async function planRoutesNode(
     return { routes: [], status: "ranking" };
   }
 
-  const participants = state.participants.filter((p) => p.location);
-  const candidates = state.candidates;
+  const participants = limitParticipants(
+    state.participants.filter((p) => p.location)
+  );
+  const candidates = limitCandidates(state.candidates);
   const city = state.city || "苏州";
   const routes: RouteResult[] = [];
 
@@ -547,8 +583,10 @@ async function planRoutesNode(
 async function rankResultsNode(
   state: typeof GatherAnnotation.State
 ): Promise<Partial<typeof GatherAnnotation.Update>> {
-  const participants = state.participants.filter((p) => p.location);
-  const candidates = state.candidates;
+  const participants = limitParticipants(
+    state.participants.filter((p) => p.location)
+  );
+  const candidates = limitCandidates(state.candidates);
   const allRoutes = state.routes;
 
   if (candidates.length === 0) {
