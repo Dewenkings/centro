@@ -129,6 +129,24 @@ function readPositiveInteger(
   return parsed;
 }
 
+function resolveRedisCredentials(
+  env: NodeJS.ProcessEnv
+): { url: string; token: string } | undefined {
+  const credentialPairs = [
+    [env.UPSTASH_REDIS_REST_URL, env.UPSTASH_REDIS_REST_TOKEN],
+    [
+      env.UPSTASH_REDIS_REST_KV_REST_API_URL,
+      env.UPSTASH_REDIS_REST_KV_REST_API_TOKEN,
+    ],
+  ] as const;
+
+  for (const [url, token] of credentialPairs) {
+    if (url && token) return { url, token };
+  }
+
+  return undefined;
+}
+
 export function getBeijingWindow(now: Date): BeijingWindow {
   const shifted = new Date(now.getTime() + BEIJING_OFFSET_MS);
   const day = shifted.toISOString().slice(0, 10);
@@ -180,10 +198,9 @@ export async function checkPublicDemoQuota(
   options: QuotaCheckOptions = {}
 ): Promise<QuotaResult> {
   const env = options.env ?? process.env;
-  const url = env.UPSTASH_REDIS_REST_URL;
-  const token = env.UPSTASH_REDIS_REST_TOKEN;
+  const credentials = resolveRedisCredentials(env);
 
-  if (!url || !token) {
+  if (!credentials) {
     return {
       allowed: false,
       code: "QUOTA_UNAVAILABLE",
@@ -192,6 +209,7 @@ export async function checkPublicDemoQuota(
   }
 
   try {
+    const { url, token } = credentials;
     const now = options.now ?? new Date();
     const window = getBeijingWindow(now);
     const clientHash = anonymizeClient(clientId, token);
