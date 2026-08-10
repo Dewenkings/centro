@@ -2,107 +2,150 @@
 
 # Centro
 
-### AI-powered fair meetup planning
+### An AI Agent for fair meetup planning
 
-**Find a place that fits the plan without making one person cross the whole city.**
+**Not another midpoint calculator. Centro finds the place where nobody has to absorb an unfair share of the journey.**
 
-Describe where everyone starts and what the group wants to do. Centro interprets the request, searches around a shared area, compares real route times, and explains the fairest options on a map.
+Tell Centro where everyone starts and what the group wants. It turns that conversation into a shared search area, compares real routes to every candidate, and explains the fairest choices on a map.
 
 ![Next.js](https://img.shields.io/badge/Next.js-15-111827?logo=nextdotjs)
 ![React](https://img.shields.io/badge/React-19-087EA4?logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agent-0F766E)
 ![AMap](https://img.shields.io/badge/AMap-Web%20Service-1677FF)
+![Upstash](https://img.shields.io/badge/Upstash-Redis-00E9A3?logo=redis&logoColor=white)
+![Vercel](https://img.shields.io/badge/Vercel-Live-000000?logo=vercel)
 
-[Live Demo](https://centro-nine.vercel.app/) · [中文文档](./README.zh-CN.md) · [Try the preset](#zero-cost-showcase) · [Quick start](#quick-start) · [Product design](./docs/superpowers/specs/2026-08-09-public-demo-portfolio-design.md)
+[🚀 Live Demo](https://centro-nine.vercel.app/) · [📖 中文文档](./README.zh-CN.md) · [Try without an API key](#try-it-in-30-seconds) · [Architecture](#how-the-agent-works) · [Quick start](#quick-start)
 
 </div>
 
 ---
 
-## Why Centro
+## The product idea
 
-Choosing a restaurant for people in different neighborhoods looks simple until the group starts comparing routes.
+Meetup planning is a small decision with surprisingly bad coordination costs. One person searches for venues, everyone checks a different route, and the entire conversation restarts when someone changes the cuisine or their starting point.
 
-- **Coordination is repetitive.** Someone searches venues, everyone checks a route, and the discussion starts again when the cuisine changes.
-- **A geometric midpoint is not necessarily fair.** Rivers, road networks, metro transfers, and congestion can turn equal straight-line distances into very different journeys.
-- **Travel fairness competes with venue preference.** The closest area may not contain the food or activity the group actually wants.
-- **Most recommendations hide the trade-off.** A useful answer should show who travels how far and why one option ranks above another.
+Centro treats this as a constrained group decision—not a map lookup:
 
-Centro converts that group-chat problem into one auditable flow.
+- **A geographic midpoint can be misleading.** Rivers, road networks, metro transfers, and congestion make equal straight-line distances very unequal journeys.
+- **The best area is useless without the right venue.** Travel fairness has to be balanced with what the group actually wants to eat or do.
+- **An average can hide one terrible trip.** Centro minimizes the slowest participant's route instead of optimizing a number that looks good while one person carries the cost.
+- **A recommendation should be inspectable.** The map and cards show every participant's route, so the ranking can be understood rather than merely trusted.
 
-## How it works
+The result is a recommendation the whole group can discuss, refine, and verify.
+
+## Try it in 30 seconds
+
+Open the [live demo](https://centro-nine.vercel.app/) and choose the **Suzhou hotpot** preset labeled “No API · sample data.” It renders the complete map, chat, and recommendation experience without calling the LLM or AMap.
+
+For a live request, try this conversational flow:
 
 ```text
-Natural-language request
-  → infer participants, addresses, city, and venue preference
-  → geocode each starting point
-  → compute a shared search area
-  → discover nearby venues
-  → plan every participant-to-venue route
-  → rank by the slowest arrival time
-  → render the map, route breakdown, and explanation
+我住深圳坪山，小明住深圳坪洲，想吃烧烤
 ```
 
-The ranking objective is deliberately easy to explain:
+Centro geocodes both starting points, computes a new shared search area, finds nearby venues, compares every participant-to-venue route, and ranks the results.
+
+```text
+换成水煮肉
+```
+
+Only the preference changed, so the Agent reuses the participants and center instead of paying to recompute the same location state.
+
+```text
+我地址改到深圳南山
+```
+
+The starting point changed, so stale coordinates and recommendations are cleared before Centro geocodes and recomputes the plan.
+
+That distinction—**reuse valid state, invalidate derived state**—is what makes the experience a stateful Agent rather than a sequence of unrelated prompts.
+
+## What visitors can experience
+
+| Capability | What happens |
+|---|---|
+| Natural-language planning | Chinese conversation is parsed into participants, locations, city, and venue preference |
+| Multi-turn clarification | Missing details trigger a focused follow-up instead of a generic failure |
+| Stateful refinement | Cuisine-only changes reuse location state; address or city changes recompute it |
+| Real route comparison | AMap geocoding, POI discovery, and transit/driving routes replace straight-line guesses |
+| Fairness-first ranking | Candidates are sorted by the slowest participant's arrival time |
+| Explainable results | The map and cards expose participants, center, venues, distance, duration, and travel mode |
+| Visible Agent progress | SSE streams geocoding, searching, route planning, and ranking states |
+| Responsive interaction | Mobile visitors can switch between the conversation and map/results views |
+| Always-available showcase | A deterministic preset demonstrates the result even when live API capacity is unavailable |
+
+## Why it is more than a map demo
+
+Centro is designed as a portfolio project with mechanisms that can be inspected in code.
+
+### 1. Explicit Agent state transitions
+
+The LangGraph workflow distinguishes three kinds of turns:
+
+```text
+new request         → geocode → compute center → search → route → rank
+missing information → ask a focused question → wait for clarification
+preference change   → reuse locations and center → search → route → rank
+address/city change → invalidate stale derived state → geocode again
+```
+
+This prevents a new Shenzhen request from accidentally inheriting an earlier Suzhou center while keeping preference-only follow-ups fast and inexpensive.
+
+### 2. An explainable fairness objective
+
+For every candidate venue, Centro calculates:
 
 ```text
 fairness score = max(route time for every participant)
 ```
 
-Minimizing the maximum route time avoids a result that looks efficient on average while placing most of the burden on one person. Total travel time remains visible as supporting context.
+The candidate with the smallest maximum arrival time ranks first. This minimax objective is intentionally simple: it reduces the burden on the worst-off traveler, while total and average journey time remain visible as supporting context.
 
-## Features
+Candidates without a complete route for every active participant are excluded instead of being ranked with fabricated values. The UI also guards malformed route data so visitors never see `Infinity` or `NaN` as a travel estimate.
 
-| Capability | What it does |
-|---|---|
-| Natural-language intake | Extracts people, locations, city, and preferences from conversational Chinese input |
-| Multi-turn clarification | Asks for missing information instead of failing an incomplete request |
-| Constraint iteration | Understands follow-ups such as “switch to Japanese food” without re-entering every address |
-| Real route comparison | Uses AMap geocoding, POI search, and route planning rather than straight-line distance alone |
-| Fairness-first ranking | Sorts venues by the slowest participant's arrival time |
-| Agent progress streaming | Streams geocoding, searching, planning, and ranking states through SSE |
-| Explainable map results | Shows participants, the search center, ranked venues, and per-person route details |
-| Responsive results | Exposes both conversation and map/results views on mobile |
+### 3. Paid-call protection before the expensive work begins
 
-## Zero-cost showcase
+The public endpoint applies input, workload, burst, per-client daily, and deployment-wide daily boundaries before any LLM or AMap call. Shared counters are checked and incremented atomically in Upstash Redis, so multiple Vercel instances observe the same quota.
 
-The first screen includes a **Suzhou hotpot** preset labeled “No API · sample data.” It populates the normal map, message, and recommendation state without calling an LLM or AMap Web Service.
+If Redis or credentials are unavailable, live search fails closed while the zero-cost preset remains usable. This protects API keys without turning the portfolio into a dead landing page.
 
-This gives portfolio visitors a reliable way to understand the full result experience even when live API capacity is disabled. The preset is clearly labeled and is never presented as a live recommendation.
+### 4. Reproducible evidence
 
-For live search, try:
+The repository includes regression coverage for Agent state reuse/recomputation, incomplete routes, quota behavior, request validation, Beijing-day rollover, mobile viewport behavior, and Vercel-generated Upstash environment names.
+
+## How the Agent works
 
 ```text
-我住观前街，小明住阳澄湖，想吃火锅
+Natural-language request
+  → extract participants, addresses, city, and venue preference
+  → geocode each starting point
+  → compute a shared search area
+  → discover nearby venues
+  → plan every participant-to-venue route
+  → rank by the slowest arrival time
+  → stream the map, route breakdown, and explanation
 ```
 
-Then refine it conversationally:
-
-```text
-换成日料
-```
-
-## Architecture
-
-| Layer | Responsibility | Technology |
-|---|---|---|
-| Interface | Chat, map, recommendation cards, responsive views | Next.js 15, React 19, Tailwind CSS, Leaflet |
-| API | Request validation, durable quotas, SSE transport | Next.js Route Handler + Upstash Redis |
-| Agent | Intent parsing, clarification, state transitions, ranking | LangGraph.js |
-| Intelligence | Structured intent extraction | DeepSeek through an OpenAI-compatible API |
-| Location | Geocoding, nearby POIs, public-transit/driving routes | AMap Web Service |
-
-The main Agent graph is:
+The main LangGraph topology is:
 
 ```text
 START → parseInput
   ├─ missing information → ask user → END
-  ├─ preference iteration → searchPoi
-  └─ new/clarified request → geocode → computeCenter
+  ├─ preference-only iteration → searchPoi
+  └─ new/address-changing request → geocode → computeCenter
 
 searchPoi → planRoutes → rankResults → END
 ```
+
+| Layer | Responsibility | Technology |
+|---|---|---|
+| Interface | Chat, map, recommendation cards, responsive views | Next.js 15, React 19, Tailwind CSS, Leaflet |
+| API | Validation, durable quotas, SSE transport | Next.js Route Handler, Upstash Redis |
+| Agent | Intent parsing, clarification, state transitions, ranking | LangGraph.js |
+| Intelligence | Structured intent extraction | DeepSeek via an OpenAI-compatible API |
+| Location | Geocoding, nearby POIs, transit/driving routes | AMap Web Service |
+| Delivery | Serverless deployment and environment management | Vercel |
 
 Important modules:
 
@@ -116,6 +159,12 @@ lib/demo/presets.ts          credential-free showcase scenarios
 lib/tools/amap.ts            AMap geocoding, POI, and route adapters
 app/components/MapView.tsx   map visualization
 ```
+
+## Supported scope
+
+Centro reliably targets **same-city, multi-location meetup planning**, including participants in different neighborhoods and districts. Full addresses that include the city produce the most reliable result.
+
+The current workflow can recognize some long-distance inputs and display distance-based driving or high-speed-rail-oriented hints. That is not the same as complete inter-city planning: Centro does not currently model railway timetables, station transfers, or a multimodal network across cities. True inter-city meetup optimization is listed in the roadmap rather than presented as an implemented capability.
 
 ## Quick start
 
@@ -153,7 +202,7 @@ Start the development server:
 npm run dev
 ```
 
-Open `http://localhost:3000`. The sample preset works without credentials; custom live search requires both API keys.
+Open `http://localhost:3000`. The preset works without credentials; custom live search requires both API keys and Redis when demo rate limiting is enabled.
 
 ## Verification
 
@@ -162,47 +211,46 @@ npm test
 npm run build
 ```
 
-The test suite covers public request validation, atomic daily and burst quotas, Beijing-day rollover, failure protection, mobile layout, and Agent cost boundaries.
+The suite covers public request validation, atomic daily and burst quotas, Beijing-day rollover, fail-closed behavior, Agent location state transitions, route integrity, and mobile layout.
 
 ## Deployment and API keys
 
-Forks should configure their own keys in the deployment provider. Real credentials must remain in `.env.local` or provider-managed environment variables; never add them to Git.
+Forks should configure their own keys in the deployment provider. Real credentials belong in `.env.local` or provider-managed environment variables and must never be committed to Git.
 
 For Vercel:
 
 1. Import the forked GitHub repository.
 2. Add `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, and `AMAP_API_KEY` under Project Settings → Environment Variables.
-3. Connect an Upstash Redis database from Vercel Marketplace. Keep the generated `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` server-only.
+3. Connect an Upstash Redis database from Vercel Marketplace. The application accepts both canonical Upstash names and the prefixed names generated by the integration.
 4. Keep the demo quota variables enabled with the values shown above.
 5. Deploy the `main` branch.
 
-The application also applies these cost boundaries:
+Public-demo cost boundaries:
 
 - 300 characters per request;
 - 20 retained chat messages;
-- 4 participants;
+- 4 participants per plan;
 - 5 routed venue candidates;
 - 5 accepted live searches per client IP per Beijing calendar day;
 - 30 accepted live searches across the deployment per Beijing calendar day;
 - 3 accepted live searches per client IP per 10-minute fixed window.
 
-All three counters are checked and incremented atomically in shared Upstash Redis before any LLM or AMap call. Daily limits reset at Beijing midnight. If credentials, Redis, or live capacity are unavailable, the endpoint fails closed while the zero-cost preset remains unlimited.
+All three Redis counters are checked atomically before paid services are called. Daily limits reset at Beijing midnight. IP-based anonymous quotas are intentionally simple: shared networks share a quota, while changing networks can produce a new quota.
 
 ## Current limitations
 
-- The product currently optimizes one city's local meetup scenario; inter-city recommendations require a different transport model.
-- Route planning is bounded for public-demo cost control and is not an exhaustive venue search.
-- Venue availability, reservations, dietary constraints, and live congestion are not yet modeled.
-- IP-based anonymous quotas are not user accounts: shared networks share a quota, while changing networks may produce a new quota.
-- Location text is sent to the configured LLM and map providers during live search; deployments should publish an appropriate privacy notice before collecting real user data.
+- Search is bounded for public-demo cost control and is not an exhaustive venue crawl.
+- Venue availability, reservations, dietary constraints, opening hours, and live congestion are not modeled.
+- Complete inter-city railway schedules, station transfers, and multimodal routing are not implemented.
+- Location text is sent to the configured LLM and map providers during live search; public deployments should publish an appropriate privacy notice before collecting real user data.
 
 ## Roadmap
 
+- Timetable-aware inter-city and multimodal meetup planning
 - Weighted preferences for cost, rating, cuisine, and accessibility
-- Shareable meetup plans and participant voting
 - Arrival-time windows and opening-hours checks
-- Authenticated usage tiers and privacy-preserving usage analytics
-- Evaluation fixtures for intent extraction and ranking quality
+- Shareable meetup plans, participant voting, and authenticated usage tiers
+- Privacy-preserving analytics and evaluation fixtures for ranking quality
 
 ## License
 
