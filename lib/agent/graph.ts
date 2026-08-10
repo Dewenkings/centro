@@ -54,6 +54,10 @@ const GatherAnnotation = Annotation.Root({
     reducer: (_a, b) => b,
     default: () => undefined,
   }),
+  locationStrategy: Annotation<"recompute" | "reuse">({
+    reducer: (_a, b) => b ?? "recompute",
+    default: () => "recompute",
+  }),
   candidates: Annotation<POI[]>({
     reducer: (_a, b) => b ?? [],
     default: () => [],
@@ -134,8 +138,9 @@ function mergeClarify(
 ): Partial<typeof GatherAnnotation.Update> {
   const mergedParticipants =
     parsed.participants && parsed.participants.length > 0
-      ? [...prev.participants]
+      ? prev.participants.map((participant) => ({ ...participant }))
       : prev.participants;
+  let participantLocationChanged = false;
 
   // 如果 clarify 补充了新的参与者，合并进去
   if (parsed.participants) {
@@ -143,16 +148,32 @@ function mergeClarify(
       if (!p.name || !p.address) continue;
       const existing = mergedParticipants.find((ep) => ep.name === p.name);
       if (existing) {
-        existing.address = p.address;
-        existing.location = undefined; // 地址变了，清空旧坐标
+        if (existing.address !== p.address) {
+          existing.address = p.address;
+          existing.location = undefined; // 地址变了，清空旧坐标
+          participantLocationChanged = true;
+        }
       } else {
         mergedParticipants.push({ name: p.name, address: p.address });
+        participantLocationChanged = true;
       }
     }
   }
 
   const mergedCity = parsed.city || prev.city;
   const mergedKeywords = parsed.keywords || prev.keywords;
+  const cityChanged = !!parsed.city && parsed.city !== prev.city;
+  const locationChanged = participantLocationChanged || cityChanged;
+  const locationReset = locationChanged
+    ? {
+        centerPoint: "",
+        candidates: [],
+        routes: [],
+        recommendations: [],
+      }
+    : {};
+  const locationStrategy =
+    locationChanged || !prev.centerPoint ? "recompute" : "reuse";
 
   // 检查是否还有缺失
   let missingInfo: string | undefined;
@@ -165,6 +186,8 @@ function mergeClarify(
       participants: mergedParticipants,
       city: mergedCity,
       keywords: mergedKeywords,
+      locationStrategy,
+      ...locationReset,
       missingInfo,
       status: "collecting",
       conversationHistory: [
@@ -177,6 +200,8 @@ function mergeClarify(
     participants: mergedParticipants,
     city: mergedCity,
     keywords: mergedKeywords,
+    locationStrategy,
+    ...locationReset,
     status: "geocoding",
     missingInfo: undefined,
   };
@@ -215,6 +240,22 @@ async function parseInputNode(
   if (process.env.MOCK_LLM === "true") {
     const content = lastUserMsg.content;
 
+    // 在测试/演示模式中保留真实 LLM 的地址修改语义
+    if (hasPrevState && content.includes("地址") && content.includes("深圳")) {
+      const clarifiedParticipants: NonNullable<ParsedInput["participants"]> = [];
+      if (content.includes("坪山")) {
+        clarifiedParticipants.push({ name: "我", address: "深圳坪山" });
+      }
+      if (content.includes("坪洲")) {
+        clarifiedParticipants.push({ name: "小明", address: "深圳坪洲" });
+      }
+      return mergeClarify(state, {
+        intent: "clarify",
+        participants: clarifiedParticipants,
+        city: "深圳",
+      });
+    }
+
     // 迭代检测
     if (hasPrevState) {
       const isIterate =
@@ -224,6 +265,7 @@ async function parseInputNode(
         const newKeyword = content.replace(/换|改|成|换成|改为|不要|换一个|改一下/g, "").trim() || "餐厅";
         return {
           keywords: newKeyword,
+          locationStrategy: "reuse",
           status: "searching",
           candidates: [],
           routes: [],
@@ -255,10 +297,19 @@ async function parseInputNode(
     if (content.includes("鄱阳湖")) {
       mockParticipants.push({ name: "他", address: "上饶鄱阳湖" });
     }
+    if (content.includes("深圳")) city = "深圳";
+    if (content.includes("坪山")) {
+      mockParticipants.push({ name: "我", address: "深圳坪山" });
+    }
+    if (content.includes("坪洲")) {
+      mockParticipants.push({ name: "小明", address: "深圳坪洲" });
+    }
     if (content.includes("火锅")) keywords = "火锅";
     if (content.includes("KTV")) keywords = "KTV";
     if (content.includes("咖啡")) keywords = "咖啡厅";
     if (content.includes("炒粉")) keywords = "炒粉";
+    if (content.includes("烧烤")) keywords = "烧烤";
+    if (content.includes("水煮肉")) keywords = "水煮肉";
 
     if (mockParticipants.length < 1) {
       return {
@@ -277,6 +328,11 @@ async function parseInputNode(
       participants: mockParticipants,
       keywords,
       city,
+      locationStrategy: "recompute",
+      centerPoint: "",
+      candidates: [],
+      routes: [],
+      recommendations: [],
       status: "geocoding",
       missingInfo: undefined,
     };
@@ -315,6 +371,7 @@ async function parseInputNode(
     const newKeyword = parsed.newKeywords || parsed.keywords || "餐厅";
     return {
       keywords: newKeyword,
+      locationStrategy: "reuse",
       status: "searching",
       candidates: [],
       routes: [],
@@ -331,11 +388,7 @@ async function parseInputNode(
     return mergeClarify(state, parsed);
   }
 
-  // 3. 全新请求
-  // 合并 prevState 中的城市信息
-  if (!parsed.city && state.city) {
-    parsed.city = state.city;
-  }
+  // 3. 全新请求：不能继承上一轮城市或中心点
 
   // 城市推断兜底
   if (!parsed.city && parsed.participants?.length) {
@@ -423,6 +476,11 @@ async function parseInputNode(
     participants,
     keywords: parsed.keywords || "餐厅",
     city: parsed.city,
+    locationStrategy: "recompute",
+    centerPoint: "",
+    candidates: [],
+    routes: [],
+    recommendations: [],
     status: "geocoding",
     missingInfo: undefined,
   };
@@ -599,6 +657,16 @@ async function rankResultsNode(
     };
   }
 
+  if (participants.length === 0) {
+    const errorMsg =
+      "暂时无法计算所有成员到候选地点的完整路线，请稍后重试或更换更具体的地址。";
+    return {
+      recommendations: [],
+      status: "done",
+      conversationHistory: [{ role: "assistant", content: errorMsg }],
+    };
+  }
+
   // 近似坐标匹配（高德 API 返回精度可能不同）
   function isSameLocation(a?: string, b?: string): boolean {
     if (!a || !b) return false;
@@ -607,27 +675,30 @@ async function rankResultsNode(
     return Math.abs(aLng - bLng) < 0.001 && Math.abs(aLat - bLat) < 0.001;
   }
 
-  const recommendations: Recommendation[] = candidates.map((poi) => {
+  const recommendations: Recommendation[] = candidates.flatMap((poi) => {
     const poiRoutes = allRoutes.filter((r) => isSameLocation(r.destination, poi.location));
-    const routesForParticipants = participants.map((p) => {
+    const routesForParticipants: Recommendation["routes"] = [];
+
+    for (const p of participants) {
       const route = poiRoutes.find((r) => isSameLocation(r.origin, p.location));
-      const distance_km = route?.distance_km ?? 999;
-      const duration_min = route?.duration_min ?? 999;
+      if (!route) return [];
+
+      const distance_km = route.distance_km;
+      const duration_min = route.duration_min;
 
       let transportMode = "公交";
-      if (distance_km >= 999) transportMode = "未知";
-      else if (distance_km < 3) transportMode = "步行/骑行";
+      if (distance_km < 3) transportMode = "步行/骑行";
       else if (distance_km < 15) transportMode = "公交/地铁";
       else if (distance_km < 50) transportMode = "驾车";
       else transportMode = "高铁+当地交通";
 
-      return {
+      routesForParticipants.push({
         participantName: p.name,
         duration_min,
         distance_km,
         transportMode,
-      };
-    });
+      });
+    }
 
     const totalDuration = routesForParticipants.reduce(
       (sum, r) => sum + r.duration_min,
@@ -637,10 +708,20 @@ async function rankResultsNode(
       ...routesForParticipants.map((r) => r.duration_min)
     );
 
-    return { poi, routes: routesForParticipants, totalDuration, maxDuration };
+    return [{ poi, routes: routesForParticipants, totalDuration, maxDuration }];
   });
 
   recommendations.sort((a, b) => a.maxDuration - b.maxDuration);
+
+  if (recommendations.length === 0) {
+    const errorMsg =
+      "暂时无法计算所有成员到候选地点的完整路线，请稍后重试或更换更具体的地址。";
+    return {
+      recommendations: [],
+      status: "done",
+      conversationHistory: [{ role: "assistant", content: errorMsg }],
+    };
+  }
 
   return {
     recommendations,
@@ -683,8 +764,12 @@ const graphBuilder = new StateGraph(GatherAnnotation)
     // 1. 缺失信息 → 结束，等待用户补充
     if (state.missingInfo) return END;
 
-    // 2. 约束迭代：已有 participants 和 centerPoint → 跳过 geocode
-    if (state.participants.length > 0 && state.centerPoint) {
+    // 2. 仅关键词迭代可以复用已有位置与中心点
+    if (
+      state.locationStrategy === "reuse" &&
+      state.participants.length > 0 &&
+      state.centerPoint
+    ) {
       return "searchPoi";
     }
 
